@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0e1116" />
+  <title>Kick-Off FM</title>
+  <script>
+    document.write('<link rel="stylesheet" href="styles.css?v=' + Date.now() + '">');
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div class="bootstrap-loader">Завантаження…</div>
+  </div>
+  <script type="module">
+    import('./app.js?v=' + Date.now());
+  </script>
+</body>
+</html>

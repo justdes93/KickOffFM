@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kick-Off FM — Prototype</title>
+  <script>
+    document.write('<link rel="stylesheet" href="legacy-style.css?v=' + Date.now() + '">');
+  </script>
+</head>
+<body>
+  <div id="app">
+    <!-- Setup screen -->
+    <section id="screen-setup" class="screen active">
+      <header class="topbar">
+        <h1>Kick-Off FM <span class="tag">prototype v0.1</span></h1>
+      </header>
+
+      <div class="setup-grid">
+        <div class="card">
+          <h2>1. Your team</h2>
+          <select id="team-home"></select>
+          <div id="home-roster" class="roster"></div>
+        </div>
+
+        <div class="card">
+          <h2>2. Opponent (AI)</h2>
+          <select id="team-away"></select>
+          <div id="away-roster" class="roster muted"></div>
+        </div>
+
+        <div class="card span-2">
+          <h2>3. Tactics &amp; formation</h2>
+          <div class="tactics-grid">
+            <label>Formation
+              <select id="home-formation"></select>
+            </label>
+            <label>Mentality
+              <select id="home-mentality">
+                <option value="-2">Very defensive</option>
+                <option value="-1">Defensive</option>
+                <option value="0" selected>Balanced</option>
+                <option value="1">Attacking</option>
+                <option value="2">Very attacking</option>
+              </select>
+            </label>
+            <label>Tempo
+              <select id="home-tempo">
+                <option value="slow">Slow</option>
+                <option value="normal" selected>Normal</option>
+                <option value="fast">Fast</option>
+              </select>
+            </label>
+            <label>Pressing height
+              <select id="home-pressHeight">
+                <option value="low">Low block</option>
+                <option value="mid" selected>Mid block</option>
+                <option value="high">High block</option>
+              </select>
+            </label>
+            <label>Pressing intensity
+              <select id="home-pressInt">
+                <option value="low">Low</option>
+                <option value="mid" selected>Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <label>Defensive line
+              <select id="home-defLine">
+                <option value="deep">Deep</option>
+                <option value="mid" selected>Standard</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <label>Width (attack)
+              <select id="home-width">
+                <option value="narrow">Narrow</option>
+                <option value="balanced" selected>Balanced</option>
+                <option value="wide">Wide</option>
+              </select>
+            </label>
+            <label>Passing
+              <select id="home-passing">
+                <option value="short">Short</option>
+                <option value="mixed" selected>Mixed</option>
+                <option value="long">Long</option>
+                <option value="direct">Direct</option>
+              </select>
+            </label>
+            <label>Dribbling
+              <select id="home-dribblingFreq">
+                <option value="rare">Rare</option>
+                <option value="sometimes" selected>Sometimes</option>
+                <option value="often">Often</option>
+              </select>
+            </label>
+            <label>Crossing
+              <select id="home-crossFreq">
+                <option value="rare">Rare</option>
+                <option value="sometimes" selected>Sometimes</option>
+                <option value="often">Often</option>
+              </select>
+            </label>
+            <label>Long shots
+              <select id="home-longShotFreq">
+                <option value="rare">Rare</option>
+                <option value="sometimes" selected>Sometimes</option>
+                <option value="often">Often</option>
+              </select>
+            </label>
+            <label>Corner routine
+              <select id="home-cornerRoutine">
+                <option value="in_swinger" selected>In-swinger</option>
+                <option value="out_swinger">Out-swinger</option>
+                <option value="near_post">Near post</option>
+                <option value="short">Short</option>
+              </select>
+            </label>
+            <label>Free kick
+              <select id="home-freeKickRoutine">
+                <option value="auto" selected>Auto</option>
+                <option value="direct">Direct shot</option>
+                <option value="whip">Whip in</option>
+                <option value="low_drive">Low drive</option>
+                <option value="short">Short pass</option>
+              </select>
+            </label>
+            <label>Time wasting
+              <select id="home-timeWasting">
+                <option value="never" selected>Never</option>
+                <option value="sometimes">Sometimes</option>
+                <option value="often">Often</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="card span-2">
+          <h2>4. Lineup</h2>
+          <p class="hint">Auto-picks best XI for chosen formation. Click a starter to swap with bench.</p>
+          <div id="lineup-pitch" class="pitch-mini"></div>
+          <div id="lineup-bench" class="bench"></div>
+        </div>
+
+        <div class="card span-2 actions">
+          <button id="btn-start" class="primary">Kick off</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Match screen -->
+    <section id="screen-match" class="screen">
+      <header class="match-header compact">
+        <div class="match-title">
+          <div class="score-line">
+            <span id="m-home-name" class="t-home"></span>
+            <span class="score-num"><span id="m-score-home">0</span> : <span id="m-score-away">0</span></span>
+            <span id="m-away-name" class="t-away"></span>
+          </div>
+          <div class="scorers-line">
+            <span id="m-scorers-home" class="scorers-home t-home"></span>
+            <span id="m-scorers-away" class="scorers-away t-away"></span>
+          </div>
+          <div class="clock-line">
+            <span id="m-clock">00:00</span>
+            <span id="m-phase" class="phase-tag">1st half</span>
+          </div>
+        </div>
+        <div class="controls">
+          <label>Speed
+            <select id="m-speed">
+              <option value="1">1x (30 min)</option>
+              <option value="2">2x (15 min)</option>
+              <option value="4" selected>4x (~7 min)</option>
+              <option value="8">8x (~4 min)</option>
+              <option value="16">16x (~2 min)</option>
+            </select>
+          </label>
+          <button id="m-debug" class="ghost" title="Toggle anchor circles, first-defender line, phase HUD">Debug</button>
+          <button id="m-pause">Pause</button>
+          <button id="m-quit" class="ghost">Abandon</button>
+        </div>
+      </header>
+      <div id="m-debug-hud" class="debug-hud" style="display:none">
+        <span id="m-debug-phase-home"></span>
+        <span class="debug-divider">·</span>
+        <span id="m-debug-phase-away"></span>
+        <span class="debug-divider">·</span>
+        <span id="m-debug-compactness"></span>
+        <span class="debug-divider">·</span>
+        <span id="m-debug-firstdef"></span>
+        <span class="debug-divider">·</span>
+        <span id="m-debug-swarm"></span>
+      </div>
+
+      <div class="match-grid">
+        <aside class="panel team-panel team-panel-home">
+          <div class="team-panel-header">
+            <h3 id="m-home-team-name" class="t-home">Home</h3>
+            <button id="m-tactics-btn" class="primary tactics-btn">Тактика</button>
+          </div>
+          <div id="m-pending" class="pending"></div>
+          <div id="m-home-squad" class="squad-list"></div>
+          <h3 class="mt">Statistics</h3>
+          <div id="m-home-stats-block" class="team-stats"></div>
+          <h3 class="mt">⭐ Highlights</h3>
+          <div id="m-highlights" class="highlights small"></div>
+        </aside>
+
+        <div class="pitch-wrap panel">
+          <svg id="m-pitch" viewBox="0 0 105 68" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="pitch-overlay">
+            <span class="t-home" id="m-pitch-home">—</span>
+            <span class="vs">vs</span>
+            <span class="t-away" id="m-pitch-away">—</span>
+          </div>
+        </div>
+
+        <aside class="panel team-panel team-panel-away">
+          <div class="team-panel-header">
+            <h3 id="m-away-team-name" class="t-away">Away</h3>
+          </div>
+          <div id="m-away-squad" class="squad-list"></div>
+          <h3 class="mt">Statistics</h3>
+          <div id="m-away-stats-block" class="team-stats"></div>
+          <h3 class="mt">AI opponent</h3>
+          <div id="m-ai-info" class="ai-info">
+            <div>Formation: <b id="ai-form">—</b></div>
+            <div>Mentality: <b id="ai-ment">—</b></div>
+          </div>
+        </aside>
+
+        <main class="panel commentary-panel commentary-bottom">
+          <h3>Live commentary</h3>
+          <div id="m-events" class="event-log"></div>
+        </main>
+      </div>
+
+      <!-- Tactics modal (Sprint UI redesign) -->
+      <div id="m-tactics-modal" class="modal hidden">
+        <div class="modal-content">
+          <header class="modal-header">
+            <h2>Тактика — <span class="t-home" id="m-tactics-team-name">Your team</span></h2>
+            <button id="m-tactics-close" class="ghost">×</button>
+          </header>
+          <div class="modal-body">
+            <div class="tactics-grid compact">
+              <label>Formation <select id="m-formation"></select></label>
+              <label>Mentality <select id="m-mentality">
+                <option value="-2">V.def</option><option value="-1">Def</option>
+                <option value="0">Bal</option><option value="1">Atk</option>
+                <option value="2">V.atk</option>
+              </select></label>
+              <label>Tempo <select id="m-tempo">
+                <option value="slow">Slow</option><option value="normal">Normal</option>
+                <option value="fast">Fast</option>
+              </select></label>
+              <label>Press height <select id="m-pressHeight">
+                <option value="low">Low</option><option value="mid">Mid</option>
+                <option value="high">High</option>
+              </select></label>
+              <label>Press int. <select id="m-pressInt">
+                <option value="low">Low</option><option value="mid">Mid</option>
+                <option value="high">High</option>
+              </select></label>
+              <label>Def line <select id="m-defLine">
+                <option value="deep">Deep</option><option value="mid">Mid</option>
+                <option value="high">High</option>
+              </select></label>
+              <label>Width <select id="m-width">
+                <option value="narrow">Narrow</option><option value="balanced">Bal</option>
+                <option value="wide">Wide</option>
+              </select></label>
+              <label>Passing <select id="m-passing">
+                <option value="short">Short</option><option value="mixed">Mixed</option>
+                <option value="long">Long</option><option value="direct">Direct</option>
+              </select></label>
+            </div>
+            <button id="m-apply" class="primary">Submit changes (3–5 min lag)</button>
+
+            <h3 class="mt">Substitutions <span id="m-subs-left" class="muted small"></span></h3>
+            <div class="sub-block">
+              <div class="sub-col">
+                <h4>On pitch</h4>
+                <div id="m-onpitch" class="player-list small"></div>
+              </div>
+              <div class="sub-col">
+                <h4>Bench</h4>
+                <div id="m-bench" class="player-list small"></div>
+              </div>
+            </div>
+            <div class="sub-pending">
+              <span>Selected out: <b id="m-sub-out">—</b></span>
+              <span>Selected in: <b id="m-sub-in">—</b></span>
+              <button id="m-sub-confirm" disabled>Make sub</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="m-fulltime" class="fulltime hidden">
+        <h2>Full time</h2>
+        <p id="m-fulltime-score"></p>
+        <button id="m-newgame">Back to setup</button>
+      </div>
+    </section>
+
+    <!-- Player attribute modal (S26) -->
+    <div id="player-modal" class="modal hidden">
+      <div class="modal-content">
+        <header class="modal-header">
+          <div class="player-modal-header">
+            <span class="num" id="pm-num"></span>
+            <span class="name" id="pm-name"></span>
+            <span class="meta" id="pm-meta"></span>
+            <span class="ovr-big" id="pm-ovr"></span>
+          </div>
+          <button id="pm-close" class="ghost">×</button>
+        </header>
+        <div class="modal-body">
+          <div class="player-attrs-grid" id="pm-grid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Force fresh module fetch on every load — bypasses browser ESM caching during dev.
+    import('./legacy-main.js?v=' + Date.now());
+  </script>
+</body>
+</html>

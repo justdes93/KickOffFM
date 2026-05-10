@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kickoff-fm",
+      "runtimeExecutable": "echo",
+      "runtimeArgs": ["fastify-already-running"],
+      "port": 3000
+    }
+  ]
+}

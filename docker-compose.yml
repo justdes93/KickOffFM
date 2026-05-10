@@ -1,0 +1,21 @@
+# Local-test compose. On Oracle host: same compose works — just put real .env values.
+# Note: server runs without env-file argument because docker-compose handles env injection.
+
+services:
+  app:
+    build: .
+    image: kickoff-fm:latest
+    container_name: kickoff-fm
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3000:3000"     # localhost-only — Cloudflare Tunnel reaches it from there
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
