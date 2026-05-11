@@ -536,3 +536,198 @@ label.field .label { display: block; margin-bottom: 4px; }
 .leaders-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); width: 28px; }
 .leaders-table td:last-child { color: #6ce58a; font-weight: 600; }
 .leaders-table .muted { color: var(--muted); font-size: 11px; }
+
+/* ============================================================================
+   S51 — Admin panel
+   ============================================================================ */
+
+.admin-tabs {
+  display: flex; gap: 6px; padding: 6px;
+  background: rgba(255,255,255,0.03); border-radius: 10px;
+  margin-bottom: 12px;
+}
+.admin-tabs button {
+  flex: 1; padding: 8px 12px; background: transparent; color: #cbd3df;
+  border: none; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.admin-tabs button.active { background: rgba(79,140,255,0.18); color: #fff; font-weight: 600; }
+.admin-tabs button:hover:not(.active) { background: rgba(255,255,255,0.05); }
+
+.admin-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.card.stat { text-align: center; padding: 18px 12px; }
+.stat-val { font-size: 28px; font-weight: 800; color: #6ce58a; line-height: 1; }
+.stat-lab { color: var(--muted); font-size: 11px; text-transform: uppercase; margin-top: 6px; letter-spacing: 0.4px; }
+
+.admin-form {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+}
+.admin-form input,
+.admin-form select {
+  background: #232b35; color: #fff; border: 1px solid rgba(255,255,255,0.10);
+  padding: 7px 10px; border-radius: 6px; font-size: 13px;
+}
+.admin-form input[type=number] { width: 80px; }
+.admin-form input[type=color] { padding: 2px; width: 44px; height: 32px; }
+.admin-form button { margin-left: auto; }
+
+.admin-filter {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  font-size: 13px; color: var(--muted);
+}
+.admin-filter select {
+  background: #232b35; color: #fff; border: 1px solid rgba(255,255,255,0.10);
+  padding: 5px 10px; border-radius: 6px;
+}
+
+.admin-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.admin-table thead th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.admin-table thead th.num { text-align: right; }
+.admin-table tbody tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+.admin-table td { padding: 8px 12px; }
+.admin-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.admin-table .muted { color: var(--muted); }
+
+.color-dot { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
+.small { padding: 2px 6px; font-size: 11px; }
+.danger { color: #ff7676; }
+.danger:hover { background: rgba(255,118,118,0.15); }
+
+/* ============================================================================
+   S50 — Style polish: gradients, glass, smooth transitions, mobile
+   ============================================================================ */
+
+html, body {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(79, 140, 255, 0.18) 0%, transparent 35%),
+    radial-gradient(circle at 100% 100%, rgba(108, 229, 138, 0.10) 0%, transparent 40%),
+    linear-gradient(180deg, #0c0f15 0%, #0e1116 100%);
+  background-attachment: fixed;
+}
+
+/* Topbar with glass + gradient underline */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(14, 17, 22, 0.78);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+.topbar .brand {
+  background: linear-gradient(135deg, #6ce58a 0%, #4f8cff 60%, #b58cff 100%);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  font-weight: 800; letter-spacing: -0.2px;
+}
+.topbar .brand .tag { color: var(--muted); -webkit-text-fill-color: var(--muted); font-weight: 500; }
+.topbar .nav a {
+  position: relative;
+  transition: color 0.18s;
+}
+.topbar .nav a::after {
+  content: ''; position: absolute; left: 50%; right: 50%; bottom: -6px;
+  height: 2px; background: linear-gradient(90deg, #4f8cff, #6ce58a);
+  border-radius: 1px; transition: left 0.18s, right 0.18s;
+}
+.topbar .nav a.active::after { left: 0; right: 0; }
+.topbar .nav a.active { color: #fff; }
+
+/* Cards — glass tint */
+.card {
+  background: linear-gradient(180deg, rgba(34, 41, 54, 0.85) 0%, rgba(26, 32, 42, 0.85) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.card.no-pad { padding: 0; }
+.card:hover { box-shadow: 0 10px 36px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05); }
+
+/* Primary buttons with gradient + glow */
+button.primary,
+button:not(.ghost):not(.danger):not(.small):not(.duty-chip):not(.league-tab):not(.role-row):not(.pop-row) {
+  background: linear-gradient(135deg, #4f8cff 0%, #6ba3ff 100%);
+  box-shadow: 0 4px 14px rgba(79, 140, 255, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  transition: transform 0.08s, box-shadow 0.18s, filter 0.15s;
+}
+button.primary:hover:not(:disabled),
+button:not(.ghost):not(.danger):not(.small):not(.duty-chip):not(.league-tab):not(.role-row):not(.pop-row):hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 6px 22px rgba(79, 140, 255, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+/* Team header emblem — subtle inner glow */
+.team-header .emblem-lg,
+.dash-header .swatch {
+  position: relative;
+  overflow: hidden;
+}
+.team-header .emblem-lg::after,
+.dash-header .swatch::after {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.25) 0%, transparent 55%);
+  pointer-events: none;
+}
+
+/* Position chips — gradient instead of flat tint */
+.pos-chip { background: linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04)); }
+.pos-chip.pos-GK { background: linear-gradient(135deg, rgba(255,210,90,0.35), rgba(255,210,90,0.10)); }
+.pos-chip.pos-CB, .pos-chip.pos-FB { background: linear-gradient(135deg, rgba(79,140,255,0.32), rgba(79,140,255,0.08)); }
+.pos-chip.pos-DM, .pos-chip.pos-CM { background: linear-gradient(135deg, rgba(168,120,255,0.32), rgba(168,120,255,0.08)); }
+.pos-chip.pos-AM, .pos-chip.pos-W  { background: linear-gradient(135deg, rgba(108,229,138,0.32), rgba(108,229,138,0.08)); }
+.pos-chip.pos-ST { background: linear-gradient(135deg, rgba(255,118,118,0.32), rgba(255,118,118,0.08)); }
+
+/* Player modal — gradient header */
+.pl-modal-card {
+  background:
+    linear-gradient(180deg, rgba(40, 50, 65, 0.96) 0%, rgba(26, 32, 42, 0.96) 100%);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.pl-modal-header {
+  background: linear-gradient(180deg, rgba(79,140,255,0.10), transparent);
+}
+.pl-attr-bar span { box-shadow: 0 0 6px rgba(108, 229, 138, 0.32); }
+
+/* Auth shell — center + gradient title */
+.auth-shell h1 {
+  background: linear-gradient(135deg, #6ce58a 0%, #4f8cff 50%, #b58cff 100%);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+}
+
+/* Mobile breakpoints — stack grids and shrink padding */
+@media (max-width: 720px) {
+  .shell { padding: 12px; }
+  .topbar { padding: 10px 12px; }
+  .topbar .nav { gap: 6px; flex-wrap: wrap; }
+  .topbar .nav a { padding: 4px 8px; font-size: 13px; }
+  .topbar .user { display: none; }
+  .grid-2 { grid-template-columns: 1fr !important; }
+  .team-header { flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 8px 16px; }
+  .team-header .emblem-lg { width: 52px; height: 52px; font-size: 15px; }
+  .roster-table { font-size: 12px; }
+  .roster-table th, .roster-table td { padding: 8px 8px; }
+  .standings-table { font-size: 11px; }
+  .standings-table th, .standings-table td { padding: 6px 4px; }
+  .standings-table td.num { font-size: 11px; }
+  .pitch-svg { max-width: 320px; }
+  .admin-form { flex-direction: column; align-items: stretch; }
+  .admin-form input, .admin-form select, .admin-form button { width: 100%; }
+}
+
+/* Fade animations for modal/popup */
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.pl-modal-card, .pop-card {
+  animation: pop-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}

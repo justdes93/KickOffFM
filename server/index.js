@@ -23,6 +23,7 @@ import authRoutes from './routes/auth.js';
 import worldRoutes from './routes/world.js';
 import friendlyRoutes from './routes/friendly.js';
 import leagueRoutes from './routes/league.js';
+import adminRoutes from './routes/admin.js';
 import { initTelegramService } from './services/telegram.js';
 import { startScheduler } from './services/scheduler.js';
 import { executeFixture, executeFriendly } from './services/matchRunner.js';
@@ -78,6 +79,7 @@ async function build() {
   await app.register(worldRoutes);
   await app.register(friendlyRoutes);
   await app.register(leagueRoutes);
+  await app.register(adminRoutes);
 
   app.get('/api/health', async () => {
     return {

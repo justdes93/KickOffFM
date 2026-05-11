@@ -18,8 +18,10 @@ const API = {
     return body;
   },
   get(p)        { return this.req(p); },
-  post(p, body) { return this.req(p, { method: 'POST', body: JSON.stringify(body || {}) }); },
-  put(p, body)  { return this.req(p, { method: 'PUT',  body: JSON.stringify(body || {}) }); },
+  post(p, body) { return this.req(p, { method: 'POST',  body: JSON.stringify(body || {}) }); },
+  put(p, body)  { return this.req(p, { method: 'PUT',   body: JSON.stringify(body || {}) }); },
+  patch(p, body){ return this.req(p, { method: 'PATCH', body: JSON.stringify(body || {}) }); },
+  del(p)        { return this.req(p, { method: 'DELETE' }); },
 };
 
 // ============================================================================
@@ -109,6 +111,7 @@ function render() {
     v === 'friendlies' ? renderFriendlies() :
     v === 'league'     ? renderLeague() :
     v === 'result'     ? renderResult() :
+    v === 'admin'      ? renderAdmin() :
     `<div class="bootstrap-loader">Невідомий екран: ${v}</div>`
   );
   root.innerHTML = (state.user ? renderTopbar() : '') + html;
@@ -126,6 +129,7 @@ function renderTopbar() {
         ${hasTeam ? `<a class="${state.view === 'tactics' ? 'active' : ''}" data-go="tactics">Тактика</a>` : ''}
         ${hasTeam ? `<a class="${state.view === 'friendlies' ? 'active' : ''}" data-go="friendlies">Товарняки</a>` : ''}
         ${hasTeam ? `<a class="${state.view === 'league' ? 'active' : ''}" data-go="league">Чемпіонат</a>` : ''}
+        ${state.user.isAdmin ? `<a class="${state.view === 'admin' ? 'active' : ''}" data-go="admin">⚙️ Адмін</a>` : ''}
         <span class="user">@${state.user.username}${state.user.isAdmin ? ' 👑' : ''}</span>
         <button class="ghost" data-action="logout">Вийти</button>
       </nav>
@@ -1104,6 +1108,36 @@ function attachHandlers() {
       loadLeague(slug);
     });
   });
+  // S51: admin tab buttons + CRUD actions
+  document.querySelectorAll('[data-admin-tab]').forEach(n => {
+    n.addEventListener('click', () => {
+      const tab = n.getAttribute('data-admin-tab');
+      state.params = { ...state.params, _loaded: false, tab };
+      loadAdmin(tab);
+    });
+  });
+  document.querySelectorAll('[data-action="adm-pick-league"]').forEach(n => {
+    n.addEventListener('change', () => {
+      state.params.selectedLeague = n.value;
+      state.params.selectedTeam = null;
+      state.params._loaded = false;
+      loadAdmin(state.params.tab);
+    });
+  });
+  document.querySelectorAll('[data-action="adm-pick-team"]').forEach(n => {
+    n.addEventListener('change', () => {
+      state.params.selectedTeam = n.value || null;
+      state.params._loaded = false;
+      loadAdmin('players');
+    });
+  });
+  document.querySelectorAll('[data-adm-del-league]').forEach(n => n.addEventListener('click', () => admDeleteLeague(n.getAttribute('data-adm-del-league'))));
+  document.querySelectorAll('[data-adm-del-team]').forEach(n => n.addEventListener('click', () => admDeleteTeam(n.getAttribute('data-adm-del-team'))));
+  document.querySelectorAll('[data-adm-edit-team]').forEach(n => n.addEventListener('click', () => admEditTeam(n.getAttribute('data-adm-edit-team'))));
+  document.querySelectorAll('[data-adm-del-player]').forEach(n => n.addEventListener('click', () => admDeletePlayer(n.getAttribute('data-adm-del-player'))));
+  document.querySelectorAll('[data-adm-edit-player]').forEach(n => n.addEventListener('click', () => {
+    try { admEditPlayer(JSON.parse(n.getAttribute('data-adm-edit-player'))); } catch {}
+  }));
 }
 
 // Hooked from data-action="close-modal" inside the modal itself.
@@ -1378,6 +1412,300 @@ async function createFriendly() {
   }
 }
 
+// ============================================================================
+// Admin (S51) — only visible to users with isAdmin=true in DB
+// ============================================================================
+
+function renderAdmin() {
+  if (!state.user?.isAdmin) {
+    return `<div class="shell"><div class="card empty">Доступ лише для адмінів.</div></div>`;
+  }
+  if (!state.params._loaded) {
+    loadAdmin();
+    return `<div class="shell"><div class="card">Завантаження…</div></div>`;
+  }
+  const { overview, leagues, teams, selectedLeague, players, selectedTeam, tab } = state.params;
+  return `
+    <div class="shell">
+      <div class="dash-header">
+        <div><h1>⚙️ Адмін-панель</h1><div class="ctx">CRUD на ліги · команди · гравці</div></div>
+      </div>
+
+      <div class="admin-tabs">
+        <button class="${tab === 'overview' ? 'active' : ''}" data-admin-tab="overview">Огляд</button>
+        <button class="${tab === 'leagues' ? 'active' : ''}" data-admin-tab="leagues">Ліги</button>
+        <button class="${tab === 'teams' ? 'active' : ''}" data-admin-tab="teams">Команди</button>
+        <button class="${tab === 'players' ? 'active' : ''}" data-admin-tab="players">Гравці</button>
+      </div>
+
+      ${tab === 'overview' ? renderAdminOverview(overview) : ''}
+      ${tab === 'leagues' ? renderAdminLeagues(leagues) : ''}
+      ${tab === 'teams' ? renderAdminTeams(leagues, teams, selectedLeague) : ''}
+      ${tab === 'players' ? renderAdminPlayers(leagues, teams, selectedLeague, players, selectedTeam) : ''}
+    </div>
+  `;
+}
+
+function renderAdminOverview(o) {
+  if (!o) return '<div class="card">Завантаження…</div>';
+  return `
+    <div class="admin-grid">
+      <div class="card stat"><div class="stat-val">${o.worlds}</div><div class="stat-lab">світів</div></div>
+      <div class="card stat"><div class="stat-val">${o.leagues}</div><div class="stat-lab">ліг</div></div>
+      <div class="card stat"><div class="stat-val">${o.teams}</div><div class="stat-lab">команд</div></div>
+      <div class="card stat"><div class="stat-val">${o.players}</div><div class="stat-lab">гравців</div></div>
+      <div class="card stat"><div class="stat-val">${o.users}</div><div class="stat-lab">користувачів</div></div>
+      <div class="card stat"><div class="stat-val">${o.admins}</div><div class="stat-lab">адмінів</div></div>
+      <div class="card stat"><div class="stat-val">${o.managedTeams}</div><div class="stat-lab">з тренерами</div></div>
+    </div>
+  `;
+}
+
+function renderAdminLeagues(leagues) {
+  return `
+    <div class="card">
+      <h2>Створити лігу</h2>
+      <div id="adm-lg-err"></div>
+      <div class="admin-form">
+        <input id="adm-lg-slug" placeholder="slug (epl-2)" />
+        <input id="adm-lg-name" placeholder="Назва (Premier 2)" />
+        <input id="adm-lg-country" placeholder="EN" maxlength="2" />
+        <input id="adm-lg-tier" type="number" min="1" max="5" placeholder="Tier (1)" />
+        <button class="primary" data-action="adm-create-league">+ Створити</button>
+      </div>
+    </div>
+    <div class="card no-pad">
+      <table class="admin-table">
+        <thead><tr><th>Slug</th><th>Назва</th><th>Країна</th><th class="num">Tier</th><th class="num">Команд</th><th></th></tr></thead>
+        <tbody>
+          ${leagues.map(l => `
+            <tr>
+              <td>${l.slug}</td>
+              <td>${l.name}</td>
+              <td>${l.country}</td>
+              <td class="num">${l.tier}</td>
+              <td class="num">${l.teamCount}</td>
+              <td><button class="ghost danger small" data-adm-del-league="${l._id}">✕</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminTeams(leagues, teams, selectedLeague) {
+  return `
+    <div class="card">
+      <h2>Створити команду</h2>
+      <div id="adm-tm-err"></div>
+      <div class="admin-form">
+        <select id="adm-tm-league">${leagues.map(l => `<option value="${l._id}" ${l._id === selectedLeague ? 'selected' : ''}>${l.name}</option>`).join('')}</select>
+        <input id="adm-tm-slug" placeholder="slug" />
+        <input id="adm-tm-name" placeholder="Назва" />
+        <input id="adm-tm-short" placeholder="ABC" maxlength="4" />
+        <input id="adm-tm-color" type="color" value="#4f8cff" />
+        <input id="adm-tm-tier" type="number" min="1" max="5" value="3" />
+        <button class="primary" data-action="adm-create-team">+ Створити</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="admin-filter">
+        <span>Фільтр ліги:</span>
+        <select data-action="adm-pick-league">
+          <option value="">Усі</option>
+          ${leagues.map(l => `<option value="${l._id}" ${l._id === selectedLeague ? 'selected' : ''}>${l.name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="card no-pad">
+      <table class="admin-table">
+        <thead><tr><th>Slug</th><th>Назва</th><th>Short</th><th>Колір</th><th class="num">★</th><th>Тренер</th><th></th></tr></thead>
+        <tbody>
+          ${teams.map(t => `
+            <tr>
+              <td>${t.slug}</td>
+              <td>${t.name}</td>
+              <td>${t.short}</td>
+              <td><span class="color-dot" style="background:${t.color}"></span> ${t.color}</td>
+              <td class="num">${t.tier}</td>
+              <td>${t.managerUsername ? '@' + t.managerUsername : '<span class="muted">—</span>'}</td>
+              <td>
+                <button class="ghost small" data-adm-edit-team="${t._id}">✎</button>
+                <button class="ghost danger small" data-adm-del-team="${t._id}">✕</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminPlayers(leagues, teams, selectedLeague, players, selectedTeam) {
+  return `
+    <div class="card">
+      <div class="admin-filter">
+        <span>Ліга:</span>
+        <select data-action="adm-pick-league">
+          ${leagues.map(l => `<option value="${l._id}" ${l._id === selectedLeague ? 'selected' : ''}>${l.name}</option>`).join('')}
+        </select>
+        <span>Команда:</span>
+        <select data-action="adm-pick-team">
+          <option value="">— оберіть —</option>
+          ${teams.map(t => `<option value="${t._id}" ${t._id === selectedTeam ? 'selected' : ''}>${t.name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    ${selectedTeam ? `
+      <div class="card">
+        <h2>Створити гравця</h2>
+        <div id="adm-pl-err"></div>
+        <div class="admin-form">
+          <input id="adm-pl-num" type="number" min="1" max="99" placeholder="#" />
+          <input id="adm-pl-name" placeholder="Імʼя" />
+          <select id="adm-pl-role">${['GK','CB','FB','DM','CM','AM','W','ST'].map(r => `<option>${r}</option>`).join('')}</select>
+          <input id="adm-pl-tier" type="number" min="1" max="5" value="3" />
+          <input id="adm-pl-age" type="number" min="15" max="45" value="24" />
+          <button class="primary" data-action="adm-create-player">+ Створити</button>
+        </div>
+      </div>
+      <div class="card no-pad">
+        <table class="admin-table">
+          <thead><tr><th class="num">#</th><th>Імʼя</th><th>Поз</th><th>Sub-роль</th><th class="num">Tier</th><th class="num">Вік</th><th></th></tr></thead>
+          <tbody>
+            ${players.map(p => `
+              <tr>
+                <td class="num">${p.num}</td>
+                <td>${p.name}</td>
+                <td>${p.role}</td>
+                <td>${p.role_kind || '<span class="muted">—</span>'}</td>
+                <td class="num">${p.tier}</td>
+                <td class="num">${p.age || '—'}</td>
+                <td>
+                  <button class="ghost small" data-adm-edit-player='${escAttr(JSON.stringify(p))}'>✎</button>
+                  <button class="ghost danger small" data-adm-del-player="${p._id}">✕</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : '<div class="card empty">Оберіть команду, щоб побачити гравців.</div>'}
+  `;
+}
+
+async function loadAdmin(tab = 'overview') {
+  try {
+    const [ov, lg] = await Promise.all([
+      API.get('/api/admin/overview'),
+      API.get('/api/admin/leagues'),
+    ]);
+    let teams = state.params.teams || [];
+    let players = state.params.players || [];
+    let selectedLeague = state.params.selectedLeague || lg.leagues[0]?._id;
+    let selectedTeam = state.params.selectedTeam || null;
+    if ((tab === 'teams' || tab === 'players') && selectedLeague) {
+      const tt = await API.get(`/api/admin/teams?leagueId=${selectedLeague}`);
+      teams = tt.teams;
+    }
+    if (tab === 'players' && selectedTeam) {
+      const pp = await API.get(`/api/admin/players?teamId=${selectedTeam}`);
+      players = pp.players;
+    }
+    state.params = {
+      _loaded: true, tab,
+      overview: ov, leagues: lg.leagues, teams, players,
+      selectedLeague, selectedTeam,
+    };
+    render();
+  } catch (err) {
+    state.params = { _loaded: true, tab: 'overview', overview: null, leagues: [], teams: [], players: [] };
+    render();
+  }
+}
+
+async function admCreateLeague() {
+  const slug = document.getElementById('adm-lg-slug').value.trim();
+  const name = document.getElementById('adm-lg-name').value.trim();
+  const country = document.getElementById('adm-lg-country').value.trim() || 'XX';
+  const tier = Number(document.getElementById('adm-lg-tier').value) || 1;
+  if (!slug || !name) return showErr('adm-lg-err', 'slug + name required');
+  try {
+    await API.post('/api/admin/leagues', { slug, name, country, tier });
+    state.params = { _loaded: false, tab: 'leagues' };
+    loadAdmin('leagues');
+  } catch (err) { showErr('adm-lg-err', err.message); }
+}
+
+async function admCreateTeam() {
+  const leagueId = document.getElementById('adm-tm-league').value;
+  const slug = document.getElementById('adm-tm-slug').value.trim();
+  const name = document.getElementById('adm-tm-name').value.trim();
+  const short = document.getElementById('adm-tm-short').value.trim();
+  const color = document.getElementById('adm-tm-color').value;
+  const tier = Number(document.getElementById('adm-tm-tier').value) || 3;
+  if (!leagueId || !slug || !name || !short) return showErr('adm-tm-err', 'усі поля обовʼязкові');
+  try {
+    await API.post('/api/admin/teams', { leagueId, slug, name, short, color, tier });
+    state.params.selectedLeague = leagueId;
+    loadAdmin('teams');
+  } catch (err) { showErr('adm-tm-err', err.message); }
+}
+
+async function admDeleteTeam(id) {
+  if (!confirm('Видалити команду? Гравці теж видаляться.')) return;
+  await API.del(`/api/admin/teams/${id}`);
+  loadAdmin('teams');
+}
+
+async function admDeleteLeague(id) {
+  if (!confirm('Видалити лігу? (тільки якщо немає команд)')) return;
+  try { await API.del(`/api/admin/leagues/${id}`); loadAdmin('leagues'); }
+  catch (err) { alert(err.message); }
+}
+
+async function admCreatePlayer() {
+  const teamId = state.params.selectedTeam;
+  const num = Number(document.getElementById('adm-pl-num').value);
+  const name = document.getElementById('adm-pl-name').value.trim();
+  const role = document.getElementById('adm-pl-role').value;
+  const tier = Number(document.getElementById('adm-pl-tier').value) || 3;
+  const age = Number(document.getElementById('adm-pl-age').value) || 24;
+  if (!num || !name) return showErr('adm-pl-err', 'імʼя + номер обовʼязкові');
+  try {
+    await API.post('/api/admin/players', { teamId, num, name, role, tier, age });
+    loadAdmin('players');
+  } catch (err) { showErr('adm-pl-err', err.message); }
+}
+
+async function admDeletePlayer(id) {
+  if (!confirm('Видалити гравця?')) return;
+  await API.del(`/api/admin/players/${id}`);
+  loadAdmin('players');
+}
+
+async function admEditPlayer(p) {
+  const name = prompt('Імʼя:', p.name);
+  if (name == null) return;
+  const num = Number(prompt('Номер:', p.num)) || p.num;
+  const tier = Number(prompt('Tier (1-5):', p.tier)) || p.tier;
+  const age = Number(prompt('Вік:', p.age || 24)) || p.age || 24;
+  await API.patch(`/api/admin/players/${p._id}`, { name, num, tier, age });
+  loadAdmin('players');
+}
+
+async function admEditTeam(id) {
+  const t = state.params.teams.find(x => x._id === id);
+  if (!t) return;
+  const name = prompt('Назва:', t.name); if (name == null) return;
+  const short = prompt('Short (3-4 літери):', t.short); if (short == null) return;
+  const color = prompt('Колір (#hex):', t.color); if (color == null) return;
+  const tier = Number(prompt('Tier (1-5):', t.tier)) || t.tier;
+  await API.patch(`/api/admin/teams/${id}`, { name, short, color, tier });
+  loadAdmin('teams');
+}
+
 function showErr(targetId, code) {
   const node = document.getElementById(targetId);
   if (node) node.innerHTML = `<div class="err">${errMsg(code)}</div>`;
@@ -1454,6 +1782,9 @@ async function handleAction(action, payload) {
   if (action === 'create-friendly') {
     return createFriendly();
   }
+  if (action === 'adm-create-league')  return admCreateLeague();
+  if (action === 'adm-create-team')    return admCreateTeam();
+  if (action === 'adm-create-player')  return admCreatePlayer();
   if (action === 'close-popup' || action === 'close-modal') {
     closePopups(); closePlayerModal();
     return;
