@@ -104,6 +104,7 @@ function render() {
     v === '2fa'        ? render2fa() :
     v === 'onboarding' ? renderOnboarding() :
     v === 'dashboard'  ? renderDashboard() :
+    v === 'team'       ? renderTeam() :
     v === 'tactics'    ? renderTactics() :
     v === 'result'     ? renderResult() :
     `<div class="bootstrap-loader">Невідомий екран: ${v}</div>`
@@ -113,13 +114,15 @@ function render() {
 }
 
 function renderTopbar() {
+  const hasTeam = !!state.user.currentTeamId;
   return `
     <header class="topbar">
       <div class="brand">⚽ Kick-Off FM <span class="tag">beta</span></div>
       <nav class="nav">
-        <a class="${state.view === 'dashboard' ? 'active' : ''}" data-go="dashboard">Команда</a>
-        ${state.user.currentTeamId ? `<a class="${state.view === 'tactics' ? 'active' : ''}" data-go="tactics">Тактика</a>` : ''}
-        <span class="user">@${state.user.username}</span>
+        <a class="${state.view === 'dashboard' ? 'active' : ''}" data-go="dashboard">Огляд</a>
+        ${hasTeam ? `<a class="${state.view === 'team' ? 'active' : ''}" data-go="team">Склад</a>` : ''}
+        ${hasTeam ? `<a class="${state.view === 'tactics' ? 'active' : ''}" data-go="tactics">Тактика</a>` : ''}
+        <span class="user">@${state.user.username}${state.user.isAdmin ? ' 👑' : ''}</span>
         <button class="ghost" data-action="logout">Вийти</button>
       </nav>
     </header>
@@ -355,40 +358,144 @@ function renderTactics() {
     loadTactics();
     return `<div class="shell"><div class="card">Завантаження…</div></div>`;
   }
-  const { team, tactics } = state.params;
+  const { team, roster, formations, rolesCatalog, edit } = state.params;
+  const tactics = edit.tactics;
+  const slots = formations[tactics.formation] || formations['4-3-3'];
+  const playerMap = Object.fromEntries(roster.map(p => [p._id, p]));
+
+  // Resolve current slot→player assignment (lineup override OR auto-pick).
+  const lineup = resolveLineup(slots, roster, edit.lineup);
+
   return `
     <div class="shell">
       <div class="dash-header">
         <div class="swatch" style="background:${team.color || '#666'}"></div>
         <div><h1>Тактика — ${team.name}</h1></div>
       </div>
+
+      <div class="card no-pad pitch-card">
+        <div class="pitch-bar">
+          <span>${tactics.formation}</span>
+          <select id="t-formation">
+            ${Object.keys(formations).map(f =>
+              `<option ${f === tactics.formation ? 'selected' : ''}>${f}</option>`).join('')}
+          </select>
+        </div>
+        ${renderVerticalPitch(slots, lineup, playerMap, team.color)}
+        <div class="pitch-hint">Натисни на місце на полі — щоб поставити іншого гравця. Натисни на гравця — щоб обрати роль.</div>
+      </div>
+
       <div class="card">
         <div id="tact-err"></div>
-        <form data-form="tactics">
-          <div class="tactics-grid">
-            ${tacticsField('formation', 'Схема', tactics.formation, FORMATIONS)}
-            ${tacticsField('mentality', 'Ментальність', tactics.mentality, MENTALITIES)}
-            ${tacticsField('tempo', 'Темп', tactics.tempo, TEMPOS)}
-            ${tacticsField('pressHeight', 'Висота пресингу', tactics.pressHeight, PRESS_HEIGHTS)}
-            ${tacticsField('pressInt', 'Інтенсивність пресингу', tactics.pressInt, PRESS_INTS)}
-            ${tacticsField('defLine', 'Лінія оборони', tactics.defLine, DEF_LINES)}
-            ${tacticsField('width', 'Ширина атаки', tactics.width, WIDTHS)}
-            ${tacticsField('passing', 'Стиль передач', tactics.passing, PASSINGS)}
-            ${tacticsField('dribblingFreq', 'Дриблінг', tactics.dribblingFreq, FREQS)}
-            ${tacticsField('crossFreq', 'Подачі', tactics.crossFreq, FREQS)}
-            ${tacticsField('longShotFreq', 'Дальні удари', tactics.longShotFreq, FREQS)}
-            ${tacticsField('cornerRoutine', 'Кутові', tactics.cornerRoutine, CORNERS)}
-            ${tacticsField('freeKickRoutine', 'Штрафні', tactics.freeKickRoutine, FKS)}
-            ${tacticsField('timeWasting', 'Затягування часу', tactics.timeWasting, FREQS)}
-          </div>
-          <div class="actions">
-            <button type="submit">Зберегти</button>
-            <button class="ghost" type="button" data-go="dashboard">Скасувати</button>
-          </div>
-        </form>
+        <div class="tactics-grid">
+          ${tacticsField('mentality', 'Ментальність', tactics.mentality, MENTALITIES)}
+          ${tacticsField('tempo', 'Темп', tactics.tempo, TEMPOS)}
+          ${tacticsField('pressHeight', 'Висота пресингу', tactics.pressHeight, PRESS_HEIGHTS)}
+          ${tacticsField('pressInt', 'Інтенсивність пресингу', tactics.pressInt, PRESS_INTS)}
+          ${tacticsField('defLine', 'Лінія оборони', tactics.defLine, DEF_LINES)}
+          ${tacticsField('width', 'Ширина атаки', tactics.width, WIDTHS)}
+          ${tacticsField('passing', 'Стиль передач', tactics.passing, PASSINGS)}
+          ${tacticsField('dribblingFreq', 'Дриблінг', tactics.dribblingFreq, FREQS)}
+          ${tacticsField('crossFreq', 'Подачі', tactics.crossFreq, FREQS)}
+          ${tacticsField('longShotFreq', 'Дальні удари', tactics.longShotFreq, FREQS)}
+          ${tacticsField('cornerRoutine', 'Кутові', tactics.cornerRoutine, CORNERS)}
+          ${tacticsField('freeKickRoutine', 'Штрафні', tactics.freeKickRoutine, FKS)}
+          ${tacticsField('timeWasting', 'Затягування часу', tactics.timeWasting, FREQS)}
+        </div>
+        <div class="actions">
+          <button class="primary" data-action="save-tactics">💾 Зберегти</button>
+          <button class="ghost" data-go="dashboard">Скасувати</button>
+        </div>
       </div>
     </div>
   `;
+}
+
+// Vertical pitch SVG — own goal at BOTTOM, opp goal at TOP.
+// slot.x ∈ [0..1] (0 = own goal, 1 = opp). screen Y flips: 1 - x.
+// slot.y ∈ [0..1] (0 = left, 1 = right). screen X = y.
+function renderVerticalPitch(slots, lineup, playerMap, color) {
+  // viewBox: 100 wide × 140 tall (3:4 aspect, portrait).
+  const W = 100, H = 140;
+  const PAD = 6;
+  const innerW = W - PAD * 2, innerH = H - PAD * 2;
+  const pins = slots.map(slot => {
+    const cx = PAD + slot.y * innerW;
+    const cy = PAD + (1 - slot.x) * innerH;
+    const playerId = lineup[slot.id];
+    const p = playerId ? playerMap[playerId] : null;
+    return { slot, cx, cy, p };
+  });
+  return `
+    <svg class="pitch-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="pitchGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#1f4a30" />
+          <stop offset="1" stop-color="#173a25" />
+        </linearGradient>
+      </defs>
+      <!-- pitch surface + simple markings -->
+      <rect x="2" y="2" width="${W-4}" height="${H-4}" rx="2" fill="url(#pitchGrad)" stroke="rgba(255,255,255,0.18)" stroke-width="0.4"/>
+      <line x1="2" y1="${H/2}" x2="${W-2}" y2="${H/2}" stroke="rgba(255,255,255,0.15)" stroke-width="0.4"/>
+      <circle cx="${W/2}" cy="${H/2}" r="9" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="0.4"/>
+      <!-- top (opp) box -->
+      <rect x="${W/2 - 22}" y="2" width="44" height="20" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="0.4"/>
+      <rect x="${W/2 - 10}" y="2" width="20" height="8" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="0.4"/>
+      <!-- bottom (own) box -->
+      <rect x="${W/2 - 22}" y="${H-22}" width="44" height="20" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="0.4"/>
+      <rect x="${W/2 - 10}" y="${H-10}" width="20" height="8" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="0.4"/>
+
+      ${pins.map(({ slot, cx, cy, p }) => `
+        <g class="pitch-pin" data-slot-id="${slot.id}" data-player-id="${p?._id || ''}">
+          <circle cx="${cx}" cy="${cy}" r="6.4" fill="${color || '#4f8cff'}" stroke="rgba(0,0,0,0.4)" stroke-width="0.5"/>
+          <text x="${cx}" y="${cy + 1.6}" text-anchor="middle" font-size="5.4" font-weight="700" fill="#fff">${p?.num ?? '?'}</text>
+          <text x="${cx}" y="${cy + 11.5}" text-anchor="middle" font-size="3.6" fill="#e0e6ee">${p ? shortName(p.name) : '—'}</text>
+        </g>
+      `).join('')}
+    </svg>
+  `;
+}
+
+function shortName(name) {
+  // "C. Davies" — leave as-is. "John Smith" → "J. Smith".
+  if (!name) return '';
+  if (name.includes('.')) return name;
+  const parts = name.split(' ');
+  if (parts.length < 2) return name;
+  return parts[0][0] + '. ' + parts.slice(1).join(' ');
+}
+
+function resolveLineup(slots, roster, overrides) {
+  // Pick best player per slot by role-compatibility + OVR. Overrides take precedence.
+  const compat = {
+    GK: ['GK'],
+    CB: ['CB'],
+    FB: ['FB', 'CB'],
+    DM: ['DM', 'CM'],
+    CM: ['CM', 'DM', 'AM'],
+    AM: ['AM', 'CM', 'W'],
+    W:  ['W', 'AM', 'ST'],
+    ST: ['ST', 'W'],
+  };
+  const used = new Set();
+  // First, honor overrides.
+  const out = {};
+  if (overrides) {
+    for (const [slotId, pid] of Object.entries(overrides)) {
+      if (pid && roster.find(p => p._id === pid)) {
+        out[slotId] = pid; used.add(pid);
+      }
+    }
+  }
+  for (const slot of slots) {
+    if (out[slot.id]) continue;
+    const compatRoles = compat[slot.role] || [slot.role];
+    const candidates = roster.filter(p => !used.has(p._id) && compatRoles.includes(p.role));
+    candidates.sort((a, b) => (ovrOf(b) - ovrOf(a)) + (a.role === slot.role ? -10 : 0) - (b.role === slot.role ? -10 : 0));
+    const pick = candidates[0] || roster.find(p => !used.has(p._id));
+    if (pick) { out[slot.id] = pick._id; used.add(pick._id); }
+  }
+  return out;
 }
 
 const FORMATIONS = ['4-3-3','4-4-2','4-2-3-1','3-5-2','4-4-2 diamond','4-4-1-1','4-1-4-1','3-4-3','5-3-2','5-4-1','4-1-2-1-2','4-2-3-1 wide'];
@@ -416,12 +523,169 @@ async function loadTactics() {
     const dash = await API.get('/api/dashboard');
     if (!dash.managing) return go('onboarding');
     const teamId = dash.managing.team.id;
-    const data = await API.get(`/api/teams/${teamId}`);
-    state.params = { _loaded: true, team: data.team, tactics: data.team.tactics };
+    const [team, fm, rl] = await Promise.all([
+      API.get(`/api/teams/${teamId}`),
+      API.get('/api/formations'),
+      API.get('/api/roles'),
+    ]);
+    state.params = {
+      _loaded: true,
+      team: team.team,
+      roster: team.roster,
+      formations: fm.formations,
+      rolesCatalog: rl.roles,
+      edit: {
+        tactics: { ...team.team.tactics },
+        lineup:  { ...(team.team.lineupOverrides || {}) },
+        roles:   {},   // playerId → { role_kind, duty } overrides this session
+      },
+    };
     render();
-  } catch {
+  } catch (err) {
     state.params = { _loaded: true, team: null };
     render();
+  }
+}
+
+// ---- Lineup swap menu (S47) ----
+function openSlotMenu(slotId) {
+  closePopups();
+  const { roster, edit } = state.params;
+  const slots = state.params.formations[edit.tactics.formation];
+  const slot = slots.find(s => s.id === slotId);
+  const currentId = edit.lineup[slotId] || resolveLineup(slots, roster, edit.lineup)[slotId];
+  // Sort: same-position first, then others
+  const compat = { GK:['GK'], CB:['CB'], FB:['FB','CB'], DM:['DM','CM'], CM:['CM','DM','AM'], AM:['AM','CM','W'], W:['W','AM','ST'], ST:['ST','W'] };
+  const allow = compat[slot.role] || [slot.role];
+  const sorted = [...roster].sort((a, b) => {
+    const ac = allow.includes(a.role) ? 0 : 1;
+    const bc = allow.includes(b.role) ? 0 : 1;
+    if (ac !== bc) return ac - bc;
+    return ovrOf(b) - ovrOf(a);
+  });
+  const pop = document.createElement('div');
+  pop.className = 'pop-modal';
+  pop.innerHTML = `
+    <div class="pop-card">
+      <button class="pl-close" data-action="close-popup">×</button>
+      <h3>Слот ${slotId} · ${slot.role}</h3>
+      <div class="pop-list">
+        ${sorted.map(p => `
+          <button class="pop-row ${p._id === currentId ? 'current' : ''}" data-pick-player="${p._id}" data-slot="${slotId}">
+            <span class="num">#${p.num}</span>
+            <span class="pos-chip pos-${p.role}">${ROLE_UA[p.role] || p.role}</span>
+            <span class="name">${p.name}</span>
+            <span class="ovr">${ovrOf(p)}</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  pop.addEventListener('click', (e) => { if (e.target === pop) closePopups(); });
+  document.body.appendChild(pop);
+  pop.querySelectorAll('[data-pick-player]').forEach(b => {
+    b.addEventListener('click', () => {
+      const pid = b.getAttribute('data-pick-player');
+      const sid = b.getAttribute('data-slot');
+      // Remove player from any other slot they may occupy
+      for (const k of Object.keys(state.params.edit.lineup)) {
+        if (state.params.edit.lineup[k] === pid) delete state.params.edit.lineup[k];
+      }
+      state.params.edit.lineup[sid] = pid;
+      closePopups(); render();
+    });
+  });
+}
+
+// ---- Role picker menu (S47) ----
+function openRoleMenu(playerId) {
+  closePopups();
+  const { roster, rolesCatalog, edit } = state.params;
+  const p = roster.find(x => x._id === playerId);
+  if (!p) return;
+  const list = rolesCatalog[p.role] || [];
+  if (list.length === 0) return;
+  const current = edit.roles[playerId]?.role_kind ?? p.role_kind ?? list[0].id;
+  const currentDuty = edit.roles[playerId]?.duty ?? p.duty ?? 'support';
+
+  const pop = document.createElement('div');
+  pop.className = 'pop-modal';
+  pop.innerHTML = `
+    <div class="pop-card wide">
+      <button class="pl-close" data-action="close-popup">×</button>
+      <h3>#${p.num} ${p.name} · роль</h3>
+      <div class="role-list">
+        ${list.map(r => {
+          const ua = ROLE_KIND_UA[r.id] || [r.label, r.desc];
+          return `
+          <button class="role-row ${r.id === current ? 'current' : ''}" data-pick-role="${r.id}" data-player="${playerId}">
+            <div class="role-row-head">
+              <span class="role-name">${ua[0]}</span>
+              ${r.id === current ? '<span class="badge">обрано</span>' : ''}
+            </div>
+            <div class="role-row-desc">${ua[1] || ''}</div>
+          </button>
+        `; }).join('')}
+      </div>
+      <div class="duty-row">
+        <span>Менталітет ролі:</span>
+        ${['defend','support','attack'].map(d => `
+          <button class="duty-chip ${d === currentDuty ? 'active' : ''}" data-pick-duty="${d}" data-player="${playerId}">${
+            d === 'defend' ? 'Захисний' : d === 'attack' ? 'Атакувальний' : 'Збалансований'
+          }</button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  pop.addEventListener('click', (e) => { if (e.target === pop) closePopups(); });
+  document.body.appendChild(pop);
+  pop.querySelectorAll('[data-pick-role]').forEach(b => {
+    b.addEventListener('click', () => {
+      const rid = b.getAttribute('data-pick-role');
+      const pid = b.getAttribute('data-player');
+      const cur = state.params.edit.roles[pid] || {};
+      state.params.edit.roles[pid] = { ...cur, role_kind: rid };
+      closePopups(); openRoleMenu(pid);
+    });
+  });
+  pop.querySelectorAll('[data-pick-duty]').forEach(b => {
+    b.addEventListener('click', () => {
+      const dty = b.getAttribute('data-pick-duty');
+      const pid = b.getAttribute('data-player');
+      const cur = state.params.edit.roles[pid] || {};
+      state.params.edit.roles[pid] = { ...cur, duty: dty };
+      closePopups(); openRoleMenu(pid);
+    });
+  });
+}
+
+function closePopups() {
+  document.querySelectorAll('.pop-modal').forEach(n => n.remove());
+}
+
+async function saveTactics() {
+  const { team, edit } = state.params;
+  // Collect tactic dropdowns from current DOM (form-less)
+  const fields = ['mentality','tempo','pressHeight','pressInt','defLine','width','passing',
+                  'dribblingFreq','crossFreq','longShotFreq','cornerRoutine','freeKickRoutine','timeWasting'];
+  const tacticsOut = { ...edit.tactics };
+  for (const f of fields) {
+    const el = document.querySelector(`select[name="${f}"]`);
+    if (el) tacticsOut[f] = el.value;
+  }
+  // formation comes from the inline pitch dropdown
+  const fSel = document.getElementById('t-formation');
+  if (fSel) tacticsOut.formation = fSel.value;
+
+  try {
+    await API.put(`/api/teams/${team._id}/tactics`, {
+      tactics: tacticsOut,
+      lineupOverrides: edit.lineup,
+      playerRoles: edit.roles,
+    });
+    go('dashboard');
+  } catch (err) {
+    showErr('tact-err', err.message);
   }
 }
 
@@ -510,6 +774,217 @@ function fmtDate(d) {
 }
 
 // ============================================================================
+// Team view (S46) — roster table + player card modal
+// ============================================================================
+
+const ROLE_UA = {
+  GK: 'ВР', CB: 'ЦЗ', FB: 'КЗ', DM: 'ОПЗ', CM: 'ЦПЗ',
+  AM: 'АПЗ', W: 'КП', ST: 'НП',
+};
+
+// S47: Ukrainian translation map for sub-roles (data.js ROLES are English).
+// Falls back to label from /api/roles if id is missing here.
+const ROLE_KIND_UA = {
+  goalkeeper:             ['Воротар', 'Стоїть на лінії, керує захистом'],
+  sweeper_keeper:         ['Воротар-лібero', 'Виходить за межі штрафної'],
+  central_defender:       ['Центральний захисник', 'Тримає лінію, нічого зайвого'],
+  ball_playing_defender:  ['ЦЗ з пасом', 'Розпочинає атаки точними передачами'],
+  no_nonsense_defender:   ['Жорсткий ЦЗ', 'Вибиває мʼяч, ризику немає'],
+  full_back:              ['Крайній захисник', 'Надійний двосторонній КЗ'],
+  wing_back:              ['Латераль', 'Підіймається високо, навіси'],
+  inverted_wing_back:     ['КЗ-інверс', 'Зміщується в центр'],
+  anchor:                 ['Якор', 'Сидить перед захистом'],
+  ball_winning_midfielder:['Руйнівник', 'Перехоплює, відбирає, мʼяч'],
+  deep_lying_playmaker:   ['Регіста', 'Диктує темп зі своєї половини'],
+  box_to_box:             ['Бокс-ту-бокс', 'Покриває все поле'],
+  mezzala:                ['Меззала', 'Атакує півпростір'],
+  advanced_playmaker:     ['Атакувальний плеймейкер', 'Творить атаки, прориви пасом'],
+  attacking_midfielder:   ['Атакувальний півзахисник', 'Звʼязок між лініями'],
+  shadow_striker:         ['Тінь нападника', 'Підключається у штрафну ззаду'],
+  trequartista:           ['Трекартиста', 'Вільний розіграш, без структури'],
+  winger:                 ['Класичний вінгер', 'Навіси з флангу'],
+  inside_forward:         ['Інсайд-форвард', 'Зрізається всередину, бʼє'],
+  inverted_winger:        ['Інверсний вінгер', 'Зміщується в центр, комбінує'],
+  advanced_forward:       ['Висунутий нападник', 'Грає на плечі захисника'],
+  target_forward:         ['Таран', 'Тримає мʼяч, виграє верхнє'],
+  poacher:                ['Браконьєр', 'Чатує у штрафній, добиває'],
+  pressing_forward:       ['Пресинг-форвард', 'Тисне на захист першим'],
+};
+
+// Player age — deterministic from name hash since seed-time DB doesn't include real birthdays.
+// Range 18-35, peaked around 24-28. Players keep stable ages between sessions.
+function ageFromName(name) {
+  let h = 2166136261;
+  for (let i = 0; i < name.length; i++) h = (h ^ name.charCodeAt(i)) * 16777619 >>> 0;
+  const r = (h % 1000) / 1000;
+  // Triangular-ish distribution: cube-root toward 25
+  const offset = Math.round((Math.cbrt(r * 2 - 1)) * 9);
+  return Math.max(17, Math.min(36, 25 + offset));
+}
+
+// Approximate overall rating per role (mirrors data.js playerOverall logic).
+function ovrOf(p) {
+  const a = p.attrs || {};
+  if (p.role === 'GK') {
+    return Math.round((a.reflexes*2 + a.handling*1.5 + a.positioning + a.command_of_area*0.5) / 5);
+  }
+  const W = {
+    CB: { tackling:3, marking:2, positioning:1.5, jumping_reach:1, strength:1, decisions:0.5 },
+    FB: { pace:2, tackling:1.5, crossing:1.5, stamina:1, positioning:1, decisions:0.5 },
+    DM: { tackling:2, passing:2, positioning:2, vision:1, decisions:1 },
+    CM: { passing:2.5, vision:2, decisions:1.5, work_rate:1.5, dribbling:1 },
+    AM: { passing:2, vision:2.5, dribbling:2, finishing:1, composure:1 },
+    W:  { pace:2.5, dribbling:2.5, crossing:1.5, finishing:1.5, composure:1 },
+    ST: { finishing:3, off_the_ball:2, pace:1.5, dribbling:1.5, composure:1.5 },
+  }[p.role] || { passing:1, dribbling:1, finishing:1, tackling:1, pace:1 };
+  let s = 0, d = 0;
+  for (const [k, w] of Object.entries(W)) { s += (a[k]||50)*w; d += w; }
+  return Math.round(s/d);
+}
+
+function renderTeam() {
+  if (!state.params._loaded) {
+    loadTeam();
+    return `<div class="shell"><div class="card">Завантаження…</div></div>`;
+  }
+  const { team, roster, manager } = state.params;
+  if (!team) return `<div class="shell"><div class="card empty">Команду не знайдено.</div></div>`;
+  // Sort by role-importance then ovr
+  const ROLE_ORDER = { GK:0, CB:1, FB:2, DM:3, CM:4, AM:5, W:6, ST:7 };
+  const sorted = [...roster].sort((a, b) => (ROLE_ORDER[a.role] - ROLE_ORDER[b.role]) || (ovrOf(b) - ovrOf(a)));
+  return `
+    <div class="shell">
+      <div class="team-header">
+        <div class="emblem-lg" style="background:${team.color || '#666'}">${(team.short || team.name[0]).slice(0, 3)}</div>
+        <div class="meta">
+          <h1>${team.name}</h1>
+          <div class="ctx">${team.city || ''}${team.city ? ' · ' : ''}Засновано ${team.founded || '—'} · Тренер: ${manager?.username ? '@' + manager.username : '<i>вільна команда</i>'}</div>
+          <div class="ctx tier">Тір ★${'★'.repeat(Math.max(0, 5 - team.tier))}${'☆'.repeat(team.tier - 1)} <span class="muted">(${team.tier} з 5)</span></div>
+        </div>
+      </div>
+      <div class="card no-pad">
+        <table class="roster-table">
+          <thead>
+            <tr><th>#</th><th>Поз</th><th>Імʼя</th><th class="num">Вік</th><th class="num">OVR</th></tr>
+          </thead>
+          <tbody>
+            ${sorted.map(p => `
+              <tr data-player='${escAttr(JSON.stringify(p))}'>
+                <td class="num">${p.num}</td>
+                <td><span class="pos-chip pos-${p.role}">${ROLE_UA[p.role] || p.role}</span></td>
+                <td>${p.name}</td>
+                <td class="num">${p.age && p.age !== 24 ? p.age : ageFromName(p.name)}</td>
+                <td class="num ovr"><b>${ovrOf(p)}</b></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function loadTeam() {
+  try {
+    const teamId = state.user.currentTeamId;
+    if (!teamId) return go('onboarding');
+    const data = await API.get(`/api/teams/${teamId}`);
+    state.params = { _loaded: true, ...data };
+    render();
+  } catch (err) {
+    state.params = { _loaded: true, team: null };
+    render();
+  }
+}
+
+function escAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/'/g, '&apos;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// ---- Player card modal ----
+
+const ATTR_META = {
+  // Tech
+  dribbling: 'Дриблінг', finishing: 'Завершення', first_touch: 'Перший дотик',
+  heading: 'Гра головою', long_shots: 'Дальні удари', passing: 'Передачі',
+  tackling: 'Відбір', crossing: 'Подачі', marking: 'Опіка', set_pieces: 'Стандарти',
+  // Mental
+  anticipation: 'Передбачення', composure: 'Холоднокровність', concentration: 'Концентрація',
+  decisions: 'Рішучість', off_the_ball: 'Без мʼяча', positioning: 'Позиційна гра',
+  vision: 'Бачення поля', work_rate: 'Працьовитість',
+  // Physical
+  acceleration: 'Прискорення', agility: 'Спритність', jumping_reach: 'Стрибучість',
+  pace: 'Швидкість', stamina: 'Витривалість', strength: 'Сила',
+  // GK
+  handling: 'Гра руками', reflexes: 'Рефлекси', aerial_reach: 'Гра на виходах',
+  one_on_ones: 'Один на один', kicking: 'Передачі ногою', command_of_area: 'Командування зоною',
+  communication: 'Спілкування', rushing_out: 'Виходи з воріт',
+};
+const OUTFIELD_GROUPS = {
+  'Технічні': ['dribbling','finishing','first_touch','heading','long_shots','passing','tackling','crossing','marking','set_pieces'],
+  'Ментальні': ['anticipation','composure','concentration','decisions','off_the_ball','positioning','vision','work_rate'],
+  'Фізичні':  ['acceleration','agility','jumping_reach','pace','stamina','strength'],
+};
+const GK_GROUPS = {
+  'Воротарські': ['handling','reflexes','aerial_reach','one_on_ones','kicking','command_of_area','communication','rushing_out'],
+  'Ментальні': ['anticipation','composure','concentration','decisions','off_the_ball','positioning','vision','work_rate'],
+  'Фізичні':  ['acceleration','agility','jumping_reach','pace','stamina','strength'],
+};
+
+function openPlayerModal(p) {
+  closePlayerModal();
+  const groups = p.role === 'GK' ? GK_GROUPS : OUTFIELD_GROUPS;
+  const allKeys = Object.values(groups).flat();
+  const sorted = allKeys.map(k => ({ k, v: p.attrs?.[k] ?? 0 })).sort((a, b) => b.v - a.v);
+  const best  = new Set(sorted.slice(0, 3).map(x => x.k));
+  const worst = new Set(sorted.slice(-3).map(x => x.k));
+  const age = p.age && p.age !== 24 ? p.age : ageFromName(p.name);
+
+  const modal = document.createElement('div');
+  modal.className = 'pl-modal';
+  modal.innerHTML = `
+    <div class="pl-modal-card">
+      <button class="pl-close" data-action="close-modal">×</button>
+      <header class="pl-modal-header">
+        <div class="num">#${p.num}</div>
+        <div class="meta">
+          <h2>${p.name}</h2>
+          <div class="ctx">${ROLE_UA[p.role] || p.role} · ${age} років · OVR <b>${ovrOf(p)}</b></div>
+        </div>
+      </header>
+      <div class="pl-attrs">
+        ${Object.entries(groups).map(([group, keys]) => `
+          <div class="pl-group">
+            <h3>${group}</h3>
+            ${keys.map(k => {
+              const v = p.attrs?.[k] ?? 0;
+              const cls = best.has(k) ? 'best' : (worst.has(k) ? 'worst' : '');
+              return `<div class="pl-attr ${cls}" title="${k}">
+                <span class="pl-attr-name">${ATTR_META[k] || k}</span>
+                <span class="pl-attr-bar"><span style="width:${v}%"></span></span>
+                <span class="pl-attr-val">${v}</span>
+              </div>`;
+            }).join('')}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closePlayerModal();
+  });
+  document.body.appendChild(modal);
+}
+
+function closePlayerModal() {
+  document.querySelectorAll('.pl-modal').forEach(n => n.remove());
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closePlayerModal();
+});
+
+// ============================================================================
 // Event handlers
 // ============================================================================
 
@@ -548,7 +1023,45 @@ function attachHandlers() {
       go('result', { fixtureId: n.getAttribute('data-result') });
     });
   });
+  // S46: roster row click → player modal
+  document.querySelectorAll('[data-player]').forEach(n => {
+    n.addEventListener('click', () => {
+      try { openPlayerModal(JSON.parse(n.getAttribute('data-player'))); }
+      catch (e) { console.error('bad player payload', e); }
+    });
+  });
+  // S47: pitch pin click — circle = slot menu, name area = role menu
+  document.querySelectorAll('.pitch-pin').forEach(g => {
+    g.addEventListener('click', (e) => {
+      const slotId = g.getAttribute('data-slot-id');
+      const playerId = g.getAttribute('data-player-id');
+      // Heuristic: if user clicked the name text (lower part), open role menu;
+      // otherwise (number circle) open swap menu.
+      const tagName = (e.target.tagName || '').toLowerCase();
+      if (playerId && tagName === 'text' && e.target.getAttribute('font-size') === '3.6') {
+        openRoleMenu(playerId);
+      } else {
+        openSlotMenu(slotId);
+      }
+    });
+  });
+  // S47: formation dropdown — re-render with new layout
+  const fSel = document.getElementById('t-formation');
+  if (fSel) {
+    fSel.addEventListener('change', () => {
+      state.params.edit.tactics.formation = fSel.value;
+      // Wipe lineup overrides — slot ids differ between formations
+      state.params.edit.lineup = {};
+      render();
+    });
+  }
 }
+
+// Hooked from data-action="close-modal" inside the modal itself.
+window.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t && t.getAttribute && t.getAttribute('data-action') === 'close-modal') closePlayerModal();
+});
 
 function showErr(targetId, code) {
   const node = document.getElementById(targetId);
@@ -560,8 +1073,9 @@ async function handleSubmit(form, data) {
     try {
       const r = await API.post('/api/auth/login', { email: data.email, password: data.password });
       if (r.needs2fa) {
-        state.params = { challengeToken: r.challengeToken };
-        return go('2fa');
+        // Pass through go() — its default `params = {}` would otherwise wipe state.params
+        // immediately after we set it (bug found during S43b smoke test on Fly.io).
+        return go('2fa', { challengeToken: r.challengeToken });
       }
       API.setToken(r.token);
       state.user = r.user;
@@ -618,6 +1132,13 @@ async function handleAction(action, payload) {
       state.params = {};
       go('dashboard');
     } catch (err) { showErr('claim-err', err.message); }
+  }
+  if (action === 'save-tactics') {
+    return saveTactics();
+  }
+  if (action === 'close-popup' || action === 'close-modal') {
+    closePopups(); closePlayerModal();
+    return;
   }
   if (action === 'release') {
     if (!confirm('Залишити команду? Дію не можна скасувати.')) return;

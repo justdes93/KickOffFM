@@ -173,3 +173,19 @@ docker compose restart
 - `docker compose up` fails with "no permission" → `newgrp docker` or relog SSH session.
 - `npm install` for argon2 fails on ARM → ensure base image is `node:22-alpine` (Dockerfile already uses arm-compatible base).
 - Mongo connect fails from Oracle → Atlas → Network Access → ensure `0.0.0.0/0` allowed for IP whitelist (or add Oracle public IP).
+
+## Promoting a user to admin (S45)
+
+Admins are set **only via direct MongoDB write** — no UI, no API endpoint that grants admin. Recipe:
+
+```bash
+# Either from Atlas Web UI (Browse Collections → users → edit doc → set isAdmin: true)
+# or via mongosh / driver:
+mongosh "$MONGO_URI"
+> use kickoff
+> db.users.updateOne({ email: 'youremail@example.com' }, { $set: { isAdmin: true } })
+```
+
+The admin guard `app.requireAdmin` (server/plugins/authPlugin.js) checks `isAdmin === true` on every admin-only route.
+Sessions issued before promotion stay valid — admin-gated routes re-check the DB each call,
+so users see the new permission on their next admin action without re-login.

@@ -268,3 +268,209 @@ label.field .label { display: block; margin-bottom: 4px; }
   text-align: center; color: var(--muted); padding: 24px;
   font-size: 13px;
 }
+
+/* ============================================================================
+   S46 — Team roster page + player card modal
+   ============================================================================ */
+
+.team-header {
+  display: flex; gap: 18px; align-items: center;
+  padding: 16px 12px 22px;
+}
+.team-header .emblem-lg {
+  width: 64px; height: 64px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 18px; color: rgba(255,255,255,0.95);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.15);
+}
+.team-header .meta h1 { margin: 0 0 4px 0; font-size: 22px; }
+.team-header .meta .ctx { color: var(--muted); font-size: 13px; }
+.team-header .meta .tier { margin-top: 2px; }
+.team-header .meta .tier .muted { font-size: 11px; }
+
+.card.no-pad { padding: 0; }
+.roster-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 14px;
+}
+.roster-table thead th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.roster-table thead th.num { text-align: right; }
+.roster-table tbody tr {
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.12s;
+}
+.roster-table tbody tr:hover { background: rgba(79,140,255,0.08); }
+.roster-table td { padding: 10px 12px; }
+.roster-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.roster-table td.num.ovr { color: #6ce58a; font-weight: 600; font-size: 15px; }
+
+.pos-chip {
+  display: inline-block; min-width: 30px; padding: 2px 8px;
+  border-radius: 4px; font-size: 11px; font-weight: 700; text-align: center;
+  background: rgba(255,255,255,0.06);
+}
+.pos-chip.pos-GK { background: rgba(255,210,90,0.25); color: #ffe9a8; }
+.pos-chip.pos-CB,
+.pos-chip.pos-FB { background: rgba(79,140,255,0.22); color: #b3cdff; }
+.pos-chip.pos-DM,
+.pos-chip.pos-CM { background: rgba(168,120,255,0.22); color: #d8c5ff; }
+.pos-chip.pos-AM,
+.pos-chip.pos-W  { background: rgba(108,229,138,0.22); color: #c4f3d2; }
+.pos-chip.pos-ST { background: rgba(255,118,118,0.22); color: #ffc1c1; }
+
+/* Player card modal */
+.pl-modal {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,0.78);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: fade-in 0.15s ease-out;
+}
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+.pl-modal-card {
+  background: #1a2028; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+  width: 100%; max-width: 760px; max-height: 88vh; overflow-y: auto;
+  position: relative;
+}
+.pl-close {
+  position: absolute; top: 10px; right: 12px; z-index: 1;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
+  color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer;
+}
+.pl-close:hover { background: rgba(255,255,255,0.10); color: #fff; }
+.pl-modal-header {
+  display: flex; gap: 16px; align-items: center;
+  padding: 18px 56px 18px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.pl-modal-header .num {
+  font-size: 28px; font-weight: 800; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+}
+.pl-modal-header .meta h2 { margin: 0 0 4px; font-size: 20px; }
+.pl-modal-header .meta .ctx { color: var(--muted); font-size: 13px; }
+.pl-modal-header .meta .ctx b { color: #6ce58a; }
+
+.pl-attrs {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  padding: 20px;
+}
+@media (max-width: 720px) {
+  .pl-attrs { grid-template-columns: 1fr; }
+}
+.pl-group h3 {
+  margin: 0 0 10px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--muted); font-weight: 600;
+}
+.pl-attr {
+  display: grid; grid-template-columns: 1fr 60px 28px;
+  align-items: center; gap: 10px;
+  padding: 4px 0; font-size: 12px;
+}
+.pl-attr-name { color: #cbd3df; }
+.pl-attr.best .pl-attr-name { color: #6ce58a; font-weight: 600; }
+.pl-attr.worst .pl-attr-name { color: #ff7676; }
+.pl-attr-bar {
+  height: 5px; background: #2a323d; border-radius: 3px; overflow: hidden;
+  position: relative;
+}
+.pl-attr-bar span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, #4f8cff, #6ce58a);
+}
+.pl-attr.best .pl-attr-bar span { background: #6ce58a; }
+.pl-attr.worst .pl-attr-bar span { background: #ff7676; }
+.pl-attr-val { text-align: right; color: #e0e6ee; font-variant-numeric: tabular-nums; }
+
+/* ============================================================================
+   S47 — Vertical formation pitch + popup pickers
+   ============================================================================ */
+
+.pitch-card { overflow: hidden; }
+.pitch-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 13px;
+}
+.pitch-bar span { color: var(--muted); }
+.pitch-bar select {
+  background: #232b35; color: #fff; border: 1px solid rgba(255,255,255,0.10);
+  padding: 4px 8px; border-radius: 6px; font-size: 13px;
+}
+.pitch-svg {
+  display: block; width: 100%; max-width: 380px; margin: 12px auto;
+}
+.pitch-pin { cursor: pointer; }
+.pitch-pin:hover circle { stroke: #fff; stroke-width: 1; }
+.pitch-hint {
+  padding: 8px 14px 14px;
+  color: var(--muted); font-size: 12px; text-align: center;
+}
+
+/* Popup picker (slot swap, role picker) */
+.pop-modal {
+  position: fixed; inset: 0; z-index: 110;
+  background: rgba(0,0,0,0.78);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: fade-in 0.15s ease-out;
+}
+.pop-card {
+  background: #1a2028; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+  width: 100%; max-width: 380px; max-height: 80vh; overflow-y: auto;
+  position: relative; padding: 16px;
+}
+.pop-card.wide { max-width: 520px; }
+.pop-card h3 { margin: 0 0 12px; padding-right: 32px; font-size: 15px; }
+.pop-list { display: flex; flex-direction: column; gap: 4px; }
+.pop-row {
+  display: grid; grid-template-columns: 36px 36px 1fr 30px;
+  align-items: center; gap: 8px;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05);
+  padding: 8px 10px; border-radius: 8px;
+  font-size: 13px; color: #cbd3df; cursor: pointer; text-align: left;
+}
+.pop-row:hover { background: rgba(79,140,255,0.10); border-color: rgba(79,140,255,0.30); }
+.pop-row.current { background: rgba(108,229,138,0.12); border-color: rgba(108,229,138,0.30); }
+.pop-row .num { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.pop-row .name { color: #e0e6ee; }
+.pop-row .ovr { color: #6ce58a; font-weight: 600; text-align: right; }
+
+.role-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.role-row {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05);
+  padding: 10px 12px; border-radius: 8px;
+  text-align: left; cursor: pointer; color: #cbd3df;
+}
+.role-row:hover { background: rgba(79,140,255,0.10); border-color: rgba(79,140,255,0.30); }
+.role-row.current { background: rgba(108,229,138,0.12); border-color: rgba(108,229,138,0.30); }
+.role-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.role-name { font-weight: 600; color: #e0e6ee; }
+.role-row-desc { font-size: 12px; color: var(--muted); }
+.badge {
+  background: #6ce58a; color: #0a1a10;
+  padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase;
+}
+
+.duty-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);
+  font-size: 12px; color: var(--muted);
+}
+.duty-chip {
+  background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
+  padding: 4px 12px; border-radius: 999px; cursor: pointer;
+  color: #cbd3df; font-size: 12px;
+}
+.duty-chip.active { background: #4f8cff; border-color: #4f8cff; color: #fff; font-weight: 600; }

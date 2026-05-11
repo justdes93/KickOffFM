@@ -28,9 +28,24 @@ const UserSchema = new mongoose.Schema({
   lastLoginAt:          { type: Date, default: null },
   matchesAttended:      { type: Number, default: 0 },              // attended live (S39+)
 
-  // Admin flags
+  // Admin flags — set MANUALLY in Atlas (no UI). Promotion recipe in deploy/README.md.
   isAdmin:              { type: Boolean, default: false },
   betaAccessGranted:    { type: Boolean, default: false },         // gated by beta-key on register
+
+  // Coach entity (S45) — every registered user is a coach by default.
+  // Career stats are populated by match-runner / season-end jobs (future sprints).
+  coach: {
+    nickname:        { type: String, default: '' },                // free-form display name; falls back to username
+    style:           { type: String, default: 'balanced' },        // attacking|defensive|possession|counter|balanced
+    reputation:      { type: Number, default: 50 },                // 0-100, derived from results
+    matchesPlayed:   { type: Number, default: 0 },
+    matchesWon:      { type: Number, default: 0 },
+    matchesDrew:     { type: Number, default: 0 },
+    matchesLost:     { type: Number, default: 0 },
+    goalsFor:        { type: Number, default: 0 },
+    goalsAgainst:    { type: Number, default: 0 },
+    trophies:        { type: [mongoose.Schema.Types.Mixed], default: () => [] },
+  },
 }, { timestamps: true });
 
 // Indexes for telegramChatId already declared via `index: true` field option.

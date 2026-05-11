@@ -31,13 +31,20 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 
 async function build() {
+  // pino-pretty is a devDependency; only use it if it's actually installed in
+  // node_modules (i.e. local dev). In production Docker image we omit dev deps,
+  // so the conditional check on NODE_ENV alone is not enough — we also probe.
+  let transport;
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      await import('pino-pretty');
+      transport = { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } };
+    } catch { /* not installed — fall back to plain JSON logs */ }
+  }
   const app = Fastify({
     logger: {
       level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-      transport: process.env.NODE_ENV === 'production' ? undefined : {
-        target: 'pino-pretty',
-        options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' },
-      },
+      transport,
     },
   });
 

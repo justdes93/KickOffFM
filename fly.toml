@@ -1,0 +1,29 @@
+# Fly.io app config for Kick-Off FM.
+# Single VM, Frankfurt region (close to user + Atlas EU clusters).
+# Secrets injected at runtime via `flyctl secrets set ...` — see deploy/README.md.
+
+app = "kickoff-fm"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  HOST = "0.0.0.0"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # IMPORTANT: must stay running 24/7 — match scheduler polls every 30s and Telegram
+  # bot uses long-polling. Auto-stop would kill in-flight matches.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

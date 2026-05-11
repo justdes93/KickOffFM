@@ -12,6 +12,7 @@
 //   GET  /api/dashboard                         — user's team + upcoming fixtures + recent results
 
 import { World, League, Season, Team, Player, Fixture, MatchResult, User } from '../db/models/index.js';
+import { FORMATIONS, ROLES } from '../../data.js';
 
 const dbReady = (app, reply) => {
   if (!app.dbReady) { reply.code(503).send({ error: 'db_not_ready' }); return false; }
@@ -19,6 +20,20 @@ const dbReady = (app, reply) => {
 };
 
 export default async function worldRoutes(app) {
+  // ---- Static catalogs (S47) ----
+  // Both are pure data from the shared engine module — public, cacheable.
+  app.get('/api/formations', async () => ({ formations: FORMATIONS }));
+  app.get('/api/roles', async () => {
+    // Group roles by position for UI role pickers.
+    const byPosition = {};
+    for (const [id, r] of Object.entries(ROLES)) {
+      (byPosition[r.position] ||= []).push({
+        id, label: r.label, desc: r.desc, defaultDuty: r.defaultDuty,
+      });
+    }
+    return { roles: byPosition };
+  });
+
   // ---- Worlds ----
   app.get('/api/worlds', async (req, reply) => {
     if (!dbReady(app, reply)) return;
@@ -121,9 +136,11 @@ export default async function worldRoutes(app) {
     return { result, home, away, fixture };
   });
 
-  // ---- Update team tactics (S40) ----
+  // ---- Update team tactics (S40 / extended S47) ----
   // Only the current manager (or admin) can edit. Validation is permissive — engine
-  // tolerates unknown keys + clamps values internally. Adds shape sanity only.
+  // tolerates unknown keys + clamps values internally.
+  // Body: { tactics: {...}, lineupOverrides: { slotId: playerId }, playerRoles: { playerId: { role_kind, duty } } }
+  // Top-level tactic keys at root level are also accepted for backwards compat.
   app.put('/api/teams/:teamId/tactics', { preHandler: app.authenticate }, async (req, reply) => {
     if (!dbReady(app, reply)) return;
     if (req.user.purpose !== 'session') return reply.code(401).send({ error: 'invalid_token_purpose' });
@@ -136,18 +153,55 @@ export default async function worldRoutes(app) {
     }
     const body = req.body || {};
     if (typeof body !== 'object') return reply.code(400).send({ error: 'invalid_body' });
-    // Merge over current — only known keys.
+
+    // Tactics merge — accept either body.tactics or top-level keys.
+    const tacticsBody = (body.tactics && typeof body.tactics === 'object') ? body.tactics : body;
     const allowedKeys = [
       'formation', 'mentality', 'tempo', 'pressHeight', 'pressInt', 'defLine',
       'width', 'passing', 'dribblingFreq', 'crossFreq', 'longShotFreq',
       'cornerRoutine', 'freeKickRoutine', 'timeWasting',
     ];
     const next = { ...team.tactics };
-    for (const k of allowedKeys) if (k in body) next[k] = String(body[k]);
+    for (const k of allowedKeys) if (k in tacticsBody) next[k] = String(tacticsBody[k]);
     team.tactics = next;
     team.markModified('tactics');
+
+    // Lineup overrides — { slotId: playerId | null }. Validate that player belongs to team.
+    if (body.lineupOverrides && typeof body.lineupOverrides === 'object') {
+      const playerIds = new Set(Object.values(body.lineupOverrides).filter(Boolean).map(String));
+      if (playerIds.size > 0) {
+        const owned = await Player.find({
+          _id: { $in: [...playerIds] }, teamId: team._id,
+        }).select('_id').lean();
+        const ownedSet = new Set(owned.map(p => p._id.toString()));
+        const map = {};
+        for (const [slotId, pid] of Object.entries(body.lineupOverrides)) {
+          if (pid && ownedSet.has(String(pid))) map[slotId] = String(pid);
+        }
+        team.lineupOverrides = map;
+      } else {
+        team.lineupOverrides = {};
+      }
+      team.markModified('lineupOverrides');
+    }
+
     await team.save();
-    return { ok: true, tactics: team.tactics };
+
+    // Per-player role assignments — write to Player.role_kind + Player.duty.
+    if (body.playerRoles && typeof body.playerRoles === 'object') {
+      const ops = [];
+      for (const [pid, rd] of Object.entries(body.playerRoles)) {
+        if (!rd || typeof rd !== 'object') continue;
+        const set = {};
+        if (typeof rd.role_kind === 'string') set.role_kind = rd.role_kind;
+        if (typeof rd.duty === 'string')      set.duty = rd.duty;
+        if (Object.keys(set).length === 0) continue;
+        ops.push(Player.updateOne({ _id: pid, teamId: team._id }, { $set: set }));
+      }
+      if (ops.length) await Promise.allSettled(ops);
+    }
+
+    return { ok: true, tactics: team.tactics, lineupOverrides: team.lineupOverrides };
   });
 
   // ---- Release ----

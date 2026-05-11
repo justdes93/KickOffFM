@@ -175,6 +175,8 @@ export default async function authRoutes(app) {
       telegramLinked: !!user.telegramChatId,
       currentTeamId: user.currentTeamId, currentWorldId: user.currentWorldId,
       isAdmin: !!user.isAdmin,
+      role: user.isAdmin ? 'admin' : 'coach',                // S45
+      coach: user.coach || {},                                // career stats (initially zeros)
     };
   });
 
