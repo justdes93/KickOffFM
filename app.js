@@ -106,6 +106,8 @@ function render() {
     v === 'dashboard'  ? renderDashboard() :
     v === 'team'       ? renderTeam() :
     v === 'tactics'    ? renderTactics() :
+    v === 'friendlies' ? renderFriendlies() :
+    v === 'league'     ? renderLeague() :
     v === 'result'     ? renderResult() :
     `<div class="bootstrap-loader">Невідомий екран: ${v}</div>`
   );
@@ -122,6 +124,8 @@ function renderTopbar() {
         <a class="${state.view === 'dashboard' ? 'active' : ''}" data-go="dashboard">Огляд</a>
         ${hasTeam ? `<a class="${state.view === 'team' ? 'active' : ''}" data-go="team">Склад</a>` : ''}
         ${hasTeam ? `<a class="${state.view === 'tactics' ? 'active' : ''}" data-go="tactics">Тактика</a>` : ''}
+        ${hasTeam ? `<a class="${state.view === 'friendlies' ? 'active' : ''}" data-go="friendlies">Товарняки</a>` : ''}
+        ${hasTeam ? `<a class="${state.view === 'league' ? 'active' : ''}" data-go="league">Чемпіонат</a>` : ''}
         <span class="user">@${state.user.username}${state.user.isAdmin ? ' 👑' : ''}</span>
         <button class="ghost" data-action="logout">Вийти</button>
       </nav>
@@ -757,6 +761,26 @@ function statsRow(label, h, a) {
 
 async function loadResult() {
   try {
+    if (state.params.isFriendly) {
+      // S49: friendly stores result inline in Friendly doc.
+      const data = await API.get(`/api/friendlies/${state.params.fixtureId}`);
+      const f = data.friendly;
+      if (f.state !== 'finished') {
+        state.params = { ...state.params, _loaded: true, result: null, pending: true };
+      } else {
+        state.params = {
+          ...state.params, _loaded: true,
+          result: {
+            homeScore: f.homeScore, awayScore: f.awayScore,
+            stats: f.stats, goals: f.goals, finishedAt: f.finishedAt,
+          },
+          home: data.home, away: data.away,
+          fixture: { round: '—', scheduledAt: f.scheduledAt, finishedAt: f.finishedAt },
+        };
+      }
+      render();
+      return;
+    }
     const data = await API.get(`/api/results/${state.params.fixtureId}`);
     state.params = { ...state.params, _loaded: true, ...data };
     render();
@@ -1055,6 +1079,31 @@ function attachHandlers() {
       render();
     });
   }
+  // S49: friendly league dropdown swaps opponent list
+  const frLg = document.getElementById('fr-league');
+  if (frLg) {
+    frLg.addEventListener('change', () => {
+      const opp = document.getElementById('fr-opponent');
+      const list = state.params.opponents[frLg.value] || [];
+      opp.innerHTML = list.map(t =>
+        `<option value="${t._id}">${t.name} (★${t.tier}) ${t.claimed ? '· живий тренер' : ''}</option>`
+      ).join('');
+    });
+  }
+  // S49: clicking a finished friendly opens its result (reuse fixture result view)
+  document.querySelectorAll('[data-friendly]').forEach(n => {
+    n.addEventListener('click', () => {
+      go('result', { fixtureId: n.getAttribute('data-friendly'), isFriendly: true });
+    });
+  });
+  // S48: league tab buttons
+  document.querySelectorAll('[data-pick-league]').forEach(n => {
+    n.addEventListener('click', () => {
+      const slug = n.getAttribute('data-pick-league');
+      state.params._loaded = false;
+      loadLeague(slug);
+    });
+  });
 }
 
 // Hooked from data-action="close-modal" inside the modal itself.
@@ -1062,6 +1111,272 @@ window.addEventListener('click', (e) => {
   const t = e.target;
   if (t && t.getAttribute && t.getAttribute('data-action') === 'close-modal') closePlayerModal();
 });
+
+// ============================================================================
+// Friendly matches (S49) — schedule + list anyone, anytime
+// ============================================================================
+
+function renderFriendlies() {
+  if (!state.params._loaded) {
+    loadFriendlies();
+    return `<div class="shell"><div class="card">Завантаження…</div></div>`;
+  }
+  const { upcoming, recent, leagues, opponents } = state.params;
+  return `
+    <div class="shell">
+      <div class="dash-header">
+        <div>
+          <h1>Товарняки</h1>
+          <div class="ctx">20 хв (2 × 10). Грай проти будь-якої команди — навіть без тренера.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Призначити матч</h2>
+        <div id="fr-err"></div>
+        <div class="friendly-form">
+          <label class="field">
+            <span class="label">Ліга</span>
+            <select id="fr-league">
+              ${leagues.map(l => `<option value="${l.slug}">${l.name}</option>`).join('')}
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">Команда</span>
+            <select id="fr-opponent">
+              ${(opponents[leagues[0].slug] || []).map(t =>
+                `<option value="${t._id}">${t.name} (★${t.tier}) ${t.claimed ? '· живий тренер' : ''}</option>`
+              ).join('')}
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">Поле</span>
+            <select id="fr-venue">
+              <option value="home" selected>Удома</option>
+              <option value="away">У гостях</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">Початок</span>
+            <select id="fr-kickoff">
+              <option value="0">Зараз</option>
+              <option value="1" selected>Через 1 хв</option>
+              <option value="5">Через 5 хв</option>
+              <option value="15">Через 15 хв</option>
+            </select>
+          </label>
+          <button class="primary" data-action="create-friendly">⚽ Зіграти</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Заплановано</h2>
+          ${upcoming.length === 0 ? '<div class="empty">Немає запланованих матчів</div>' :
+            upcoming.map(f => `
+              <div class="fixture-row">
+                <div class="when">${fmtDate(f.scheduledAt)} ${fmtTime(f.scheduledAt)}</div>
+                <div class="opp">${f.opponent?.name || '?'}</div>
+                <div class="venue">${f.venue === 'home' ? '🏠' : '✈️'}</div>
+                <div class="score">${f.state === 'in_progress' ? '⏳ грає' : 'скоро'}</div>
+              </div>
+            `).join('')}
+        </div>
+        <div class="card">
+          <h2>Зіграні</h2>
+          ${recent.length === 0 ? '<div class="empty">Поки нічого</div>' :
+            recent.map(f => `
+              <div class="fixture-row clickable" data-friendly="${f.id}">
+                <div class="when">${fmtDate(f.finishedAt)}</div>
+                <div class="opp">${f.opponent?.name || '?'}</div>
+                <div class="venue">${f.venue === 'home' ? '🏠' : '✈️'}</div>
+                <div class="score ${f.outcome}">${f.myScore}-${f.oppScore}</div>
+              </div>
+            `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadFriendlies() {
+  try {
+    const [mine, world] = await Promise.all([
+      API.get('/api/friendlies/mine'),
+      API.get('/api/worlds/alpha'),
+    ]);
+    const leagues = world.leagues;
+    // Pre-fetch teams for each league
+    const opponents = {};
+    for (const lg of leagues) {
+      const r = await API.get(`/api/worlds/alpha/leagues/${lg.slug}/teams`);
+      opponents[lg.slug] = r.teams.filter(t => t._id !== state.user.currentTeamId);
+    }
+    state.params = {
+      _loaded: true,
+      upcoming: mine.upcoming,
+      recent: mine.recent,
+      leagues, opponents,
+    };
+    render();
+  } catch (err) {
+    state.params = { _loaded: true, upcoming: [], recent: [], leagues: [], opponents: {} };
+    render();
+  }
+}
+
+function fmtTime(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return `${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
+}
+
+// ============================================================================
+// League view (S48) — standings + top scorers/assists
+// ============================================================================
+
+function renderLeague() {
+  if (!state.params._loaded) {
+    loadLeague();
+    return `<div class="shell"><div class="card">Завантаження…</div></div>`;
+  }
+  const { league, table, scorers, assists, leagues, currentLeagueSlug } = state.params;
+  return `
+    <div class="shell">
+      <div class="dash-header">
+        <div>
+          <h1>${league?.name || 'Чемпіонат'}</h1>
+          <div class="ctx">${(league?.country || '')} · ${table?.length || 0} команд</div>
+        </div>
+        <div class="league-switcher">
+          ${leagues.map(l => `
+            <button class="league-tab ${l.slug === currentLeagueSlug ? 'active' : ''}" data-pick-league="${l.slug}">${l.name}</button>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="card no-pad">
+        <table class="standings-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Команда</th>
+              <th class="num">М</th><th class="num">В</th><th class="num">Н</th><th class="num">П</th>
+              <th class="num">З</th><th class="num">П</th><th class="num">Р</th><th class="num">О</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${table.map(row => `
+              <tr class="${state.user.currentTeamId && row.teamId === state.user.currentTeamId ? 'me' : ''}">
+                <td class="num rank">${row.rank}</td>
+                <td><span class="team-dot" style="background:${row.team.color || '#666'}"></span> ${row.team.name}</td>
+                <td class="num">${row.P}</td>
+                <td class="num">${row.W}</td>
+                <td class="num">${row.D}</td>
+                <td class="num">${row.L}</td>
+                <td class="num">${row.GF}</td>
+                <td class="num">${row.GA}</td>
+                <td class="num">${row.GD >= 0 ? '+' : ''}${row.GD}</td>
+                <td class="num pts">${row.Pts}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Бомбардири</h2>
+          ${scorers.length === 0 ? '<div class="empty">Ще не забито жодного голу</div>' :
+            `<table class="leaders-table">
+              <tbody>
+                ${scorers.map(s => `
+                  <tr>
+                    <td class="num">${s.rank}</td>
+                    <td>${s.player.name} <span class="muted">(${s.team?.short || '?'})</span></td>
+                    <td class="num"><b>${s.player.state.seasonGoals}</b></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>`}
+        </div>
+        <div class="card">
+          <h2>Асистенти</h2>
+          ${assists.length === 0 ? '<div class="empty">Ще не зроблено жодної асистенції</div>' :
+            `<table class="leaders-table">
+              <tbody>
+                ${assists.map(s => `
+                  <tr>
+                    <td class="num">${s.rank}</td>
+                    <td>${s.player.name} <span class="muted">(${s.team?.short || '?'})</span></td>
+                    <td class="num"><b>${s.player.state.seasonAssists}</b></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadLeague(slug) {
+  try {
+    // Determine which league to show — default to user's team league or EPL
+    let leagues;
+    if (!state.params.leagues) {
+      const world = await API.get('/api/worlds/alpha');
+      leagues = world.leagues;
+    } else {
+      leagues = state.params.leagues;
+    }
+    const target = slug || state.params.currentLeagueSlug || (await guessMyLeague(leagues)) || leagues[0]?.slug || 'epl';
+    const [std, top, ast] = await Promise.all([
+      API.get(`/api/leagues/${target}/standings`),
+      API.get(`/api/leagues/${target}/top-scorers`),
+      API.get(`/api/leagues/${target}/top-assists`),
+    ]);
+    state.params = {
+      _loaded: true,
+      leagues, currentLeagueSlug: target,
+      league: std.league, table: std.table,
+      scorers: top.top, assists: ast.top,
+    };
+    render();
+  } catch (err) {
+    state.params = { _loaded: true, league: null, table: [], scorers: [], assists: [], leagues: state.params.leagues || [], currentLeagueSlug: slug };
+    render();
+  }
+}
+
+async function guessMyLeague(leagues) {
+  if (!state.user?.currentTeamId) return null;
+  try {
+    const data = await API.get(`/api/teams/${state.user.currentTeamId}`);
+    // team.leagueId → match by id against leagues
+    const lg = leagues.find(l => l._id === data.team.leagueId);
+    return lg?.slug || null;
+  } catch { return null; }
+}
+
+async function createFriendly() {
+  const lgSel = document.getElementById('fr-league');
+  const oppSel = document.getElementById('fr-opponent');
+  const venueSel = document.getElementById('fr-venue');
+  const kickoffSel = document.getElementById('fr-kickoff');
+  if (!oppSel?.value) return showErr('fr-err', 'оберіть суперника');
+  try {
+    await API.post('/api/friendlies', {
+      opponentTeamId: oppSel.value,
+      asHome: venueSel.value === 'home',
+      kickoffInMin: Number(kickoffSel.value),
+    });
+    // Refresh list
+    state.params = {};
+    go('friendlies');
+  } catch (err) {
+    showErr('fr-err', err.message);
+  }
+}
 
 function showErr(targetId, code) {
   const node = document.getElementById(targetId);
@@ -1135,6 +1450,9 @@ async function handleAction(action, payload) {
   }
   if (action === 'save-tactics') {
     return saveTactics();
+  }
+  if (action === 'create-friendly') {
+    return createFriendly();
   }
   if (action === 'close-popup' || action === 'close-modal') {
     closePopups(); closePlayerModal();

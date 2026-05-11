@@ -235,11 +235,13 @@ function createBall() {
 // =========================================================================
 
 export class MatchEngine {
-  constructor({ home, away, homeTactics, awayTactics, homeLineup, awayLineup, rng, isCup = false }) {
+  constructor({ home, away, homeTactics, awayTactics, homeLineup, awayLineup, rng, isCup = false, halfLenSec }) {
     this.rng = rng || mulberry32(Date.now() & 0xffffffff);
     this.tickCount = 0;
     this.gameTime = 0;            // seconds
     this.phase = 'pre';           // pre | first | halftime | second | full | shootout
+    // S49: per-instance half length override (default 45 min = 2700s; friendly mode 10 min/half = 600s).
+    this.halfLenSec = typeof halfLenSec === 'number' && halfLenSec > 0 ? halfLenSec : HALF_LEN_SEC;
     // Sprint 25a: cup-mode flag — if true and full-time is tied, a penalty
     // shootout fires instead of phase locking to 'full' on a draw.
     this.isCup = isCup;
@@ -1088,9 +1090,9 @@ export class MatchEngine {
       this.checkGoal();
       if (this.tickCount % 10 === 0) this.updatePlayerStates();
       // Phase transitions still tick
-      if (this.gameTime >= HALF_LEN_SEC && this.phase === 'first') {
+      if (this.gameTime >= this.halfLenSec && this.phase === 'first') {
         this._beginHalftime();
-      } else if (this.gameTime >= HALF_LEN_SEC * 2 && this.phase === 'second') {
+      } else if (this.gameTime >= this.halfLenSec * 2 && this.phase === 'second') {
         this._beginFulltime();
       }
       if (this.ball.ownerSide) this.stats[this.ball.ownerSide].possessionTicks++;
@@ -1260,9 +1262,9 @@ export class MatchEngine {
     if (this.tickCount % 10 === 0) this.updatePlayerStates();
 
     // 8. Phase transitions (Sprint 23: route through choreography helpers)
-    if (this.gameTime >= HALF_LEN_SEC && this.phase === 'first') {
+    if (this.gameTime >= this.halfLenSec && this.phase === 'first') {
       this._beginHalftime();
-    } else if (this.gameTime >= HALF_LEN_SEC * 2 && this.phase === 'second') {
+    } else if (this.gameTime >= this.halfLenSec * 2 && this.phase === 'second') {
       this._beginFulltime();
     }
 
@@ -2965,7 +2967,7 @@ export class MatchEngine {
     }
     if (Object.keys(diff).length === 0) return null;
     let applyAt;
-    if (this.phase === 'halftime') applyAt = HALF_LEN_SEC;
+    if (this.phase === 'halftime') applyAt = this.halfLenSec;
     else {
       const lagSec = 180 + Math.floor(this.rng() * 121);  // 3-5 min in game
       applyAt = this.gameTime + lagSec;

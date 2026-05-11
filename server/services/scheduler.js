@@ -3,8 +3,8 @@
 //
 // `start(app)` returns a stop() function to cancel polling.
 
-import { Fixture } from '../db/models/index.js';
-import { executeFixture } from './matchRunner.js';
+import { Fixture, Friendly } from '../db/models/index.js';
+import { executeFixture, executeFriendly } from './matchRunner.js';
 
 const POLL_INTERVAL_MS = 30_000;             // 30s — balanced for friend-test
 const KICKOFF_GRACE_MS = 60_000;              // start matches up to 60s late if missed
@@ -18,17 +18,25 @@ export function startScheduler(app) {
     if (stopped || !app.dbReady) return;
     try {
       const now = new Date();
-      // Pick fixtures: due and not yet started
-      const due = await Fixture.find({
-        state: 'scheduled',
-        scheduledAt: { $lte: now, $gte: new Date(now - KICKOFF_GRACE_MS - 24 * 3600 * 1000) },
-      }).sort({ scheduledAt: 1 }).limit(50).select('_id scheduledAt round homeTeamId awayTeamId').lean();
-      if (due.length) {
-        log.info(`[sched] ${due.length} fixture(s) due — kicking off`);
-        // Run all in parallel; failures don't block siblings.
-        await Promise.allSettled(due.map(f =>
-          executeFixture(f._id, { log, lockId })
-        ));
+      const fromDate = new Date(now - KICKOFF_GRACE_MS - 24 * 3600 * 1000);
+      // Pick league fixtures + friendlies in parallel
+      const [dueFixtures, dueFriendlies] = await Promise.all([
+        Fixture.find({
+          state: 'scheduled',
+          scheduledAt: { $lte: now, $gte: fromDate },
+        }).sort({ scheduledAt: 1 }).limit(50).select('_id').lean(),
+        Friendly.find({
+          state: 'scheduled',
+          scheduledAt: { $lte: now, $gte: fromDate },
+        }).sort({ scheduledAt: 1 }).limit(50).select('_id').lean(),
+      ]);
+      const totalDue = dueFixtures.length + dueFriendlies.length;
+      if (totalDue > 0) {
+        log.info(`[sched] kicking off — ${dueFixtures.length} fixture(s), ${dueFriendlies.length} friendly(ies)`);
+        await Promise.allSettled([
+          ...dueFixtures.map(f => executeFixture(f._id, { log, lockId })),
+          ...dueFriendlies.map(f => executeFriendly(f._id, { log, lockId })),
+        ]);
       }
     } catch (err) {
       log.error({ err: err.message }, '[sched] tick failed');

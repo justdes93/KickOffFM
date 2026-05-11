@@ -474,3 +474,65 @@ label.field .label { display: block; margin-bottom: 4px; }
   color: #cbd3df; font-size: 12px;
 }
 .duty-chip.active { background: #4f8cff; border-color: #4f8cff; color: #fff; font-weight: 600; }
+
+/* ============================================================================
+   S49 — Friendly matches form
+   ============================================================================ */
+
+.friendly-form {
+  display: grid; grid-template-columns: 1fr 1.5fr 0.8fr 0.8fr auto;
+  gap: 10px; align-items: end;
+}
+@media (max-width: 720px) {
+  .friendly-form { grid-template-columns: 1fr 1fr; }
+  .friendly-form button { grid-column: 1 / -1; }
+}
+.friendly-form .field { margin: 0; }
+.fixture-row.clickable { cursor: pointer; }
+.fixture-row.clickable:hover { background: rgba(79,140,255,0.10); }
+.score.W { color: #6ce58a; font-weight: 700; }
+.score.L { color: #ff7676; font-weight: 700; }
+.score.D { color: #ffcb45; font-weight: 700; }
+
+/* ============================================================================
+   S48 — Championship view
+   ============================================================================ */
+
+.league-switcher { display: flex; gap: 6px; }
+.league-tab {
+  background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
+  padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  color: #cbd3df; font-size: 12px;
+}
+.league-tab.active { background: #4f8cff; border-color: #4f8cff; color: #fff; font-weight: 600; }
+.league-tab:hover:not(.active) { background: rgba(79,140,255,0.15); }
+
+.standings-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 13px;
+}
+.standings-table thead th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.standings-table thead th.num { text-align: right; }
+.standings-table tbody tr {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.standings-table tbody tr.me { background: rgba(108,229,138,0.06); }
+.standings-table td { padding: 8px 12px; }
+.standings-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.standings-table td.rank { color: var(--muted); font-weight: 600; }
+.standings-table td.pts { color: #6ce58a; font-weight: 700; font-size: 14px; }
+.team-dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 8px; vertical-align: middle;
+}
+
+.leaders-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.leaders-table tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+.leaders-table td { padding: 8px 12px; }
+.leaders-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); width: 28px; }
+.leaders-table td:last-child { color: #6ce58a; font-weight: 600; }
+.leaders-table .muted { color: var(--muted); font-size: 11px; }

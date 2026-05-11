@@ -21,10 +21,12 @@ import * as Models from './db/models/index.js';
 import authPlugin from './plugins/authPlugin.js';
 import authRoutes from './routes/auth.js';
 import worldRoutes from './routes/world.js';
+import friendlyRoutes from './routes/friendly.js';
+import leagueRoutes from './routes/league.js';
 import { initTelegramService } from './services/telegram.js';
 import { startScheduler } from './services/scheduler.js';
-import { executeFixture } from './services/matchRunner.js';
-import { Fixture } from './db/models/index.js';
+import { executeFixture, executeFriendly } from './services/matchRunner.js';
+import { Fixture, Friendly } from './db/models/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,6 +76,8 @@ async function build() {
   // ---- Routes ----
   await app.register(authRoutes);
   await app.register(worldRoutes);
+  await app.register(friendlyRoutes);
+  await app.register(leagueRoutes);
 
   app.get('/api/health', async () => {
     return {
@@ -102,11 +106,20 @@ async function build() {
   // Useful for friend-test before season starts. Production should require admin auth.
   app.post('/api/_debug/run-fixture/:id', async (req, reply) => {
     if (!app.dbReady) return reply.code(503).send({ error: 'db_not_ready' });
-    // Override scheduledAt to "now" so the lock query succeeds.
     const f = await Fixture.findById(req.params.id);
     if (!f) return reply.code(404).send({ error: 'fixture_not_found' });
     if (f.state !== 'scheduled') return reply.code(409).send({ error: 'fixture_state', state: f.state });
     const result = await executeFixture(f._id, { log: app.log });
+    return result || { error: 'race_lost' };
+  });
+
+  // Same for friendly (S49).
+  app.post('/api/_debug/run-friendly/:id', async (req, reply) => {
+    if (!app.dbReady) return reply.code(503).send({ error: 'db_not_ready' });
+    const f = await Friendly.findById(req.params.id);
+    if (!f) return reply.code(404).send({ error: 'friendly_not_found' });
+    if (f.state !== 'scheduled') return reply.code(409).send({ error: 'friendly_state', state: f.state });
+    const result = await executeFriendly(f._id, { log: app.log });
     return result || { error: 'race_lost' };
   });
 

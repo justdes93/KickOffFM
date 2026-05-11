@@ -7,3 +7,4 @@ export { Team } from './team.js';
 export { Player } from './player.js';
 export { Fixture } from './fixture.js';
 export { MatchResult } from './matchResult.js';
+export { Friendly } from './friendly.js';

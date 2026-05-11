@@ -4,7 +4,7 @@
 // For MVP: batch mode (engine runs synchronously to full-time within a single Node task).
 // Real-time streaming for live spectators arrives in S39.
 
-import { Team, Player, Fixture, MatchResult } from '../db/models/index.js';
+import { Team, Player, Fixture, MatchResult, Friendly } from '../db/models/index.js';
 import { MatchEngine, mulberry32 } from '../../engine.js';
 import { defaultLineup, pickRole, ROLES } from '../../data.js';
 
@@ -41,10 +41,11 @@ async function loadTeamForEngine(teamId) {
   };
 }
 
-// Run one fixture to full-time. Returns the MatchResult-shaped payload.
+// Run one fixture-like doc to full-time. Accepts optional halfLenSec for friendly mode.
+// Returns the MatchResult-shaped payload.
 export async function runFixture(fixture, opts = {}) {
-  const { log = console } = opts;
-  log.info?.(`[match] running fixture ${fixture._id} round ${fixture.round}`);
+  const { log = console, halfLenSec } = opts;
+  log.info?.(`[match] running ${fixture._id} ${halfLenSec ? `(friendly, halfLen=${halfLenSec}s)` : `round ${fixture.round}`}`);
 
   const home = await loadTeamForEngine(fixture.homeTeamId);
   const away = await loadTeamForEngine(fixture.awayTeamId);
@@ -59,6 +60,7 @@ export async function runFixture(fixture, opts = {}) {
     homeLineup: defaultLineup(home, formationH),
     awayLineup: defaultLineup(away, formationA),
     rng: mulberry32(seed),
+    halfLenSec,                                                // S49: friendly mode
   });
 
   let safety = 0;
@@ -114,6 +116,8 @@ export async function executeFixture(fixtureId, opts = {}) {
     fixture.awayScore = out.awayScore;
     fixture.workerId = null;
     await fixture.save();
+    // S48: bump per-player season stats for league fixtures (friendlies don't).
+    await bumpSeasonStats(out.finalEngine, fixture);
     log.info?.(`[match] ${fixture._id} finished — ${out.homeScore}-${out.awayScore}`);
     return { fixtureId: fixture._id, homeScore: out.homeScore, awayScore: out.awayScore };
   } catch (err) {
@@ -122,6 +126,64 @@ export async function executeFixture(fixtureId, opts = {}) {
     fixture.startedAt = null;
     fixture.workerId = null;
     await fixture.save();
+    throw err;
+  }
+}
+
+// S48: Increment Player.state.seasonGoals / seasonAssists / seasonApps after a
+// league fixture. Reads per-player engine state via `_dbPlayerId` we set in
+// loadTeamForEngine. Skipped for friendlies (those don't count toward standings).
+async function bumpSeasonStats(engine, fixture) {
+  const ops = [];
+  for (const side of ['home', 'away']) {
+    const allPlayers = [...engine.teams[side].onPitch, ...engine.teams[side].bench];
+    for (const p of allPlayers) {
+      const pid = p._dbPlayerId;
+      if (!pid) continue;
+      const playedThisMatch = (p.state?.goals ?? 0) > 0 || (p.state?.assists ?? 0) > 0 || engine.teams[side].onPitch.includes(p);
+      if (!playedThisMatch) continue;
+      const inc = {};
+      if (p.state?.goals)   inc['state.seasonGoals']   = p.state.goals;
+      if (p.state?.assists) inc['state.seasonAssists'] = p.state.assists;
+      if (engine.teams[side].onPitch.includes(p)) inc['state.seasonApps'] = 1;
+      if (Object.keys(inc).length) ops.push(Player.updateOne({ _id: pid }, { $inc: inc }));
+    }
+  }
+  if (ops.length) await Promise.allSettled(ops);
+}
+
+// S49: Friendly match runner — same flow, separate collection, shorter halves.
+export async function executeFriendly(friendlyId, opts = {}) {
+  const { log = console, lockId = `worker-${process.pid}-${Date.now()}` } = opts;
+
+  const fr = await Friendly.findOneAndUpdate(
+    { _id: friendlyId, state: 'scheduled' },
+    { $set: { state: 'in_progress', startedAt: new Date(), workerId: lockId } },
+    { new: true }
+  );
+  if (!fr) {
+    log.warn?.(`[match] friendly ${friendlyId} not claimable`);
+    return null;
+  }
+
+  try {
+    const out = await runFixture(fr, { log, halfLenSec: fr.halfLenSec || 600 });
+    fr.state = 'finished';
+    fr.finishedAt = new Date();
+    fr.homeScore = out.homeScore;
+    fr.awayScore = out.awayScore;
+    fr.stats = out.stats;
+    fr.goals = out.goalsList;
+    fr.workerId = null;
+    await fr.save();
+    log.info?.(`[match] friendly ${fr._id} finished — ${out.homeScore}-${out.awayScore}`);
+    return { friendlyId: fr._id, homeScore: out.homeScore, awayScore: out.awayScore };
+  } catch (err) {
+    log.error?.(`[match] friendly ${fr._id} failed: ${err.message}`);
+    fr.state = 'scheduled';
+    fr.startedAt = null;
+    fr.workerId = null;
+    await fr.save();
     throw err;
   }
 }
