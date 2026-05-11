@@ -6,8 +6,9 @@ import mongoose from 'mongoose';
 const MatchResultSchema = new mongoose.Schema({
   fixtureId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Fixture', required: true, unique: true },
   worldId:        { type: mongoose.Schema.Types.ObjectId, ref: 'World',  required: true, index: true },
-  leagueId:       { type: mongoose.Schema.Types.ObjectId, ref: 'League', required: true, index: true },
-  seasonId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Season', required: true, index: true },
+  leagueId:       { type: mongoose.Schema.Types.ObjectId, ref: 'League', required: false, index: true },
+  seasonId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Season', required: false, index: true },
+  cupId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Cup',    required: false, index: true },
 
   homeTeamId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
   awayTeamId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },

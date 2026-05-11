@@ -100,8 +100,9 @@ export async function executeFixture(fixtureId, opts = {}) {
     await MatchResult.create({
       fixtureId: fixture._id,
       worldId: fixture.worldId,
-      leagueId: fixture.leagueId,
-      seasonId: fixture.seasonId,
+      leagueId: fixture.leagueId || null,
+      seasonId: fixture.seasonId || null,
+      cupId:    fixture.cupId    || null,
       homeTeamId: fixture.homeTeamId, awayTeamId: fixture.awayTeamId,
       homeScore: out.homeScore, awayScore: out.awayScore,
       stats: out.stats,
@@ -116,8 +117,10 @@ export async function executeFixture(fixtureId, opts = {}) {
     fixture.awayScore = out.awayScore;
     fixture.workerId = null;
     await fixture.save();
-    // S48: bump per-player season stats for league fixtures (friendlies don't).
-    await bumpSeasonStats(out.finalEngine, fixture);
+    // S48: bump per-player season stats for league fixtures only (skip cup + friendly).
+    if (fixture.leagueId && fixture.seasonId) {
+      await bumpSeasonStats(out.finalEngine, fixture);
+    }
     log.info?.(`[match] ${fixture._id} finished — ${out.homeScore}-${out.awayScore}`);
     return { fixtureId: fixture._id, homeScore: out.homeScore, awayScore: out.awayScore };
   } catch (err) {

@@ -6,10 +6,14 @@ import mongoose from 'mongoose';
 
 const FixtureSchema = new mongoose.Schema({
   worldId:        { type: mongoose.Schema.Types.ObjectId, ref: 'World',  required: true, index: true },
-  leagueId:       { type: mongoose.Schema.Types.ObjectId, ref: 'League', required: true, index: true },
-  seasonId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Season', required: true, index: true },
+  leagueId:       { type: mongoose.Schema.Types.ObjectId, ref: 'League', required: false, index: true },
+  seasonId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Season', required: false, index: true },
 
-  round:          { type: Number, required: true },                // gameweek
+  // S54: cup fixtures have cupId+cupRound instead of leagueId+seasonId.
+  cupId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Cup',    required: false, index: true },
+  cupRound:       { type: String, default: null },                 // 'r16' | 'qf' | 'sf' | 'final'
+
+  round:          { type: Number, required: false },               // gameweek (league only)
   homeTeamId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true, index: true },
   awayTeamId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true, index: true },
 

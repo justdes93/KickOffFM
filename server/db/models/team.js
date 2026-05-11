@@ -14,6 +14,7 @@ const TeamSchema = new mongoose.Schema({
   short:      { type: String, required: true, maxlength: 4 },      // 'MNR'
   city:       { type: String, default: '' },
   color:      { type: String, default: '#888888' },                // primary kit
+  emblemUrl:  { type: String, default: '' },                       // S52: optional logo URL
   founded:    { type: Number, default: 1900 },
 
   // Tier within league — 1 (elite) .. 5 (relegation candidate). Drives roster strength.

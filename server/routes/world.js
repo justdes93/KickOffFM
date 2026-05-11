@@ -11,7 +11,7 @@
 //   POST /api/teams/release                     — release current team
 //   GET  /api/dashboard                         — user's team + upcoming fixtures + recent results
 
-import { World, League, Season, Team, Player, Fixture, MatchResult, User } from '../db/models/index.js';
+import { World, League, Season, Team, Player, Fixture, MatchResult, User, Cup } from '../db/models/index.js';
 import { FORMATIONS, ROLES } from '../../data.js';
 
 const dbReady = (app, reply) => {
@@ -20,6 +20,33 @@ const dbReady = (app, reply) => {
 };
 
 export default async function worldRoutes(app) {
+  // ---- Cups (S54) — public read ----
+  app.get('/api/cups', async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const cups = await Cup.find().sort({ createdAt: -1 }).lean();
+    return { cups };
+  });
+
+  app.get('/api/cups/:id', async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    let cup;
+    try { cup = await Cup.findById(req.params.id).lean(); }
+    catch { return reply.code(400).send({ error: 'invalid_id' }); }
+    if (!cup) return reply.code(404).send({ error: 'cup_not_found' });
+    // Resolve team names per pairing
+    const teamIds = new Set();
+    for (const r of cup.rounds) {
+      for (const p of r.pairings) {
+        if (p.home) teamIds.add(p.home.toString());
+        if (p.away) teamIds.add(p.away.toString());
+      }
+    }
+    const teams = await Team.find({ _id: { $in: [...teamIds] } })
+      .select('slug name short color emblemUrl').lean();
+    const teamMap = Object.fromEntries(teams.map(t => [t._id.toString(), t]));
+    return { cup, teams: teamMap };
+  });
+
   // ---- Static catalogs (S47) ----
   // Both are pure data from the shared engine module — public, cacheable.
   app.get('/api/formations', async () => ({ formations: FORMATIONS }));

@@ -17,7 +17,7 @@
 //   PATCH  /api/admin/leagues/:id           — update
 //   DELETE /api/admin/leagues/:id           — delete (only if no teams)
 
-import { World, League, Season, Team, Player, User } from '../db/models/index.js';
+import { World, League, Season, Team, Player, User, Cup, Fixture, MatchResult } from '../db/models/index.js';
 
 const dbReady = (app, reply) => {
   if (!app.dbReady) { reply.code(503).send({ error: 'db_not_ready' }); return false; }
@@ -102,7 +102,7 @@ export default async function adminRoutes(app) {
 
   app.post('/api/admin/teams', guard, async (req, reply) => {
     if (!dbReady(app, reply)) return;
-    const { leagueId, slug, name, short, city = '', color = '#888888', tier = 3, founded = 2024 } = req.body || {};
+    const { leagueId, slug, name, short, city = '', color = '#888888', emblemUrl = '', tier = 3, founded = 2024 } = req.body || {};
     if (!leagueId || !slug || !name || !short) return reply.code(400).send({ error: 'missing_fields' });
     const lg = await League.findById(leagueId).select('worldId').lean();
     if (!lg) return reply.code(404).send({ error: 'league_not_found' });
@@ -110,7 +110,8 @@ export default async function adminRoutes(app) {
       const team = await Team.create({
         worldId: lg.worldId, leagueId,
         slug, name, short: short.slice(0, 4).toUpperCase(),
-        city, color, tier: Math.max(1, Math.min(5, Number(tier))),
+        city, color, emblemUrl,
+        tier: Math.max(1, Math.min(5, Number(tier))),
         founded: Number(founded),
       });
       return reply.code(201).send({ ok: true, team });
@@ -121,7 +122,7 @@ export default async function adminRoutes(app) {
 
   app.patch('/api/admin/teams/:id', guard, async (req, reply) => {
     if (!dbReady(app, reply)) return;
-    const allowed = ['name', 'short', 'city', 'color', 'tier', 'founded', 'slug'];
+    const allowed = ['name', 'short', 'city', 'color', 'emblemUrl', 'tier', 'founded', 'slug'];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     if (patch.short) patch.short = String(patch.short).slice(0, 4).toUpperCase();
@@ -190,6 +191,119 @@ export default async function adminRoutes(app) {
     if (!dbReady(app, reply)) return;
     const r = await Player.deleteOne({ _id: req.params.id });
     if (!r.deletedCount) return reply.code(404).send({ error: 'not_found' });
+    return { ok: true };
+  });
+
+  // ============================================================================
+  //   Cups (S54)
+  // ============================================================================
+  app.get('/api/admin/cups', guard, async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const cups = await Cup.find().lean();
+    return { cups };
+  });
+
+  // Create a cup: pick teams (4/8/16) — pairings random in round 1, fixtures created.
+  app.post('/api/admin/cups', guard, async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const { worldSlug = 'alpha', slug, name, teamIds = [], kickoffInMin = 5 } = req.body || {};
+    if (!slug || !name) return reply.code(400).send({ error: 'slug_and_name_required' });
+    if (![4, 8, 16].includes(teamIds.length)) return reply.code(400).send({ error: 'team_count_must_be_4_8_or_16' });
+    const world = await World.findOne({ slug: worldSlug }).select('_id').lean();
+    if (!world) return reply.code(404).send({ error: 'world_not_found' });
+    const teams = await Team.find({ _id: { $in: teamIds } }).select('_id name').lean();
+    if (teams.length !== teamIds.length) return reply.code(400).send({ error: 'invalid_teamIds' });
+
+    // Shuffle teams for fair bracket
+    const shuffled = [...teamIds];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    // First round pairings
+    const roundLabels = { 16: 'r16', 8: 'qf', 4: 'sf', 2: 'final' };
+    const r1Label = roundLabels[teamIds.length];
+    const pairings = [];
+    const fxIds = [];
+    const startAt = new Date(Date.now() + kickoffInMin * 60 * 1000);
+    for (let i = 0; i < shuffled.length; i += 2) {
+      const home = shuffled[i], away = shuffled[i + 1];
+      const fx = await Fixture.create({
+        worldId: world._id, cupId: null, cupRound: r1Label,
+        homeTeamId: home, awayTeamId: away,
+        scheduledAt: new Date(startAt.getTime() + (i / 2) * 90_000),  // stagger 1.5 min between matches
+        state: 'scheduled',
+      });
+      pairings.push({ home, away, winner: null, fixtureId: fx._id, score: null });
+      fxIds.push(fx._id);
+    }
+
+    const cup = await Cup.create({
+      worldId: world._id, slug, name,
+      format: 'knockout', teamCount: teamIds.length,
+      state: 'active', currentRound: 1,
+      rounds: [{ label: r1Label, pairings }],
+    });
+    // Update fixtures' cupId now that we have the cup _id
+    await Fixture.updateMany({ _id: { $in: fxIds } }, { $set: { cupId: cup._id } });
+
+    return reply.code(201).send({ ok: true, cup });
+  });
+
+  // Advance cup to next round — collects winners of last round, builds new pairings.
+  app.post('/api/admin/cups/:id/advance', guard, async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const cup = await Cup.findById(req.params.id);
+    if (!cup) return reply.code(404).send({ error: 'not_found' });
+    if (cup.state !== 'active') return reply.code(409).send({ error: 'cup_not_active' });
+    const lastRound = cup.rounds[cup.rounds.length - 1];
+    // Collect winners — pull MatchResult per fixtureId
+    const fxIds = lastRound.pairings.map(p => p.fixtureId);
+    const results = await MatchResult.find({ fixtureId: { $in: fxIds } }).lean();
+    const rMap = Object.fromEntries(results.map(r => [r.fixtureId.toString(), r]));
+    const winners = [];
+    for (const pair of lastRound.pairings) {
+      const r = rMap[pair.fixtureId.toString()];
+      if (!r) return reply.code(409).send({ error: 'round_not_complete', fixtureId: pair.fixtureId });
+      const winner = r.homeScore >= r.awayScore ? pair.home : pair.away;  // ties → home advances (MVP, no penalty shootout)
+      pair.winner = winner;
+      pair.score = { home: r.homeScore, away: r.awayScore };
+      winners.push(winner);
+    }
+    cup.markModified('rounds');
+
+    // Build next round
+    if (winners.length === 1) {
+      cup.state = 'finished';
+      cup.winnerTeamId = winners[0];
+      await cup.save();
+      return { ok: true, cup, finished: true };
+    }
+    const roundLabels = { 16: 'r16', 8: 'qf', 4: 'sf', 2: 'final' };
+    const nextLabel = roundLabels[winners.length];
+    const nextPairings = [];
+    const startAt = new Date(Date.now() + 5 * 60 * 1000);
+    for (let i = 0; i < winners.length; i += 2) {
+      const fx = await Fixture.create({
+        worldId: cup.worldId, cupId: cup._id, cupRound: nextLabel,
+        homeTeamId: winners[i], awayTeamId: winners[i + 1],
+        scheduledAt: new Date(startAt.getTime() + (i / 2) * 90_000),
+        state: 'scheduled',
+      });
+      nextPairings.push({ home: winners[i], away: winners[i + 1], winner: null, fixtureId: fx._id, score: null });
+    }
+    cup.rounds.push({ label: nextLabel, pairings: nextPairings });
+    cup.currentRound = cup.rounds.length;
+    await cup.save();
+    return { ok: true, cup, finished: false };
+  });
+
+  app.delete('/api/admin/cups/:id', guard, async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const cup = await Cup.findById(req.params.id);
+    if (!cup) return reply.code(404).send({ error: 'not_found' });
+    await Fixture.deleteMany({ cupId: cup._id });
+    await Cup.deleteOne({ _id: cup._id });
     return { ok: true };
   });
 }

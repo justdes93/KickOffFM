@@ -110,6 +110,8 @@ function render() {
     v === 'tactics'    ? renderTactics() :
     v === 'friendlies' ? renderFriendlies() :
     v === 'league'     ? renderLeague() :
+    v === 'cups'       ? renderCups() :
+    v === 'cup'        ? renderCupDetail() :
     v === 'result'     ? renderResult() :
     v === 'admin'      ? renderAdmin() :
     `<div class="bootstrap-loader">Невідомий екран: ${v}</div>`
@@ -129,6 +131,7 @@ function renderTopbar() {
         ${hasTeam ? `<a class="${state.view === 'tactics' ? 'active' : ''}" data-go="tactics">Тактика</a>` : ''}
         ${hasTeam ? `<a class="${state.view === 'friendlies' ? 'active' : ''}" data-go="friendlies">Товарняки</a>` : ''}
         ${hasTeam ? `<a class="${state.view === 'league' ? 'active' : ''}" data-go="league">Чемпіонат</a>` : ''}
+        ${hasTeam ? `<a class="${state.view === 'cups' || state.view === 'cup' ? 'active' : ''}" data-go="cups">Кубки</a>` : ''}
         ${state.user.isAdmin ? `<a class="${state.view === 'admin' ? 'active' : ''}" data-go="admin">⚙️ Адмін</a>` : ''}
         <span class="user">@${state.user.username}${state.user.isAdmin ? ' 👑' : ''}</span>
         <button class="ghost" data-action="logout">Вийти</button>
@@ -305,10 +308,12 @@ function renderDashboard() {
   const { managing, upcoming, recent } = state.params;
   if (!managing) return `<div class="shell"><div class="card empty">Команда не призначена. <a data-go="onboarding">Обрати →</a></div></div>`;
   const t = managing.team, l = managing.league, s = managing.season;
+  // S53: schedule auto-refresh if there are imminent or in-progress fixtures
+  scheduleDashboardRefresh(upcoming);
   return `
     <div class="shell">
       <div class="dash-header">
-        <div class="swatch" style="background:${t.color || '#666'}"></div>
+        <div class="swatch" style="background:${t.color || '#666'}">${t.emblemUrl ? `<img src="${t.emblemUrl}" alt="">` : ''}</div>
         <div>
           <h1>${t.name}</h1>
           <div class="ctx">${l?.name || ''} · Сезон ${s?.seasonNumber} · ★${t.tier}</div>
@@ -318,14 +323,17 @@ function renderDashboard() {
         <div class="card">
           <h2>Найближчі матчі</h2>
           ${upcoming.length === 0 ? '<div class="empty">Немає запланованих матчів</div>' :
-            upcoming.map(f => `
-              <div class="fixture-row">
-                <div class="when">${fmtDate(f.scheduledAt)}</div>
+            upcoming.map(f => {
+              const live = f.state === 'in_progress';
+              const soon = !live && (new Date(f.scheduledAt) - Date.now()) < 5 * 60 * 1000;
+              return `
+              <div class="fixture-row ${live ? 'live' : ''}">
+                <div class="when">${live ? '<span class="live-dot"></span> LIVE' : (soon ? '⏱ скоро' : fmtDate(f.scheduledAt))}</div>
                 <div class="opp">${f.opponent?.name || '?'}</div>
                 <div class="venue">${f.venue === 'home' ? '🏠' : '✈️'}</div>
                 <div class="score">тур ${f.round}</div>
               </div>
-            `).join('')}
+            `;}).join('')}
         </div>
         <div class="card">
           <h2>Останні результати</h2>
@@ -359,6 +367,25 @@ async function loadDashboard() {
     state.params = { _loaded: true, managing: null, upcoming: [], recent: [] };
     render();
   }
+}
+
+// S53: auto-refresh dashboard when matches are imminent or live.
+let _dashRefreshHandle = null;
+function scheduleDashboardRefresh(upcoming) {
+  if (_dashRefreshHandle) clearTimeout(_dashRefreshHandle);
+  if (state.view !== 'dashboard') return;
+  if (!upcoming || upcoming.length === 0) return;
+  const next = upcoming.find(f => f.state === 'in_progress')
+            || upcoming.find(f => (new Date(f.scheduledAt) - Date.now()) < 5 * 60 * 1000);
+  if (!next) return;
+  // 15s while live or imminent; 60s otherwise.
+  const ms = next.state === 'in_progress' ? 15_000 : 30_000;
+  _dashRefreshHandle = setTimeout(() => {
+    if (state.view === 'dashboard') {
+      state.params._loaded = false;
+      loadDashboard();
+    }
+  }, ms);
 }
 
 function renderTactics() {
@@ -883,7 +910,7 @@ function renderTeam() {
   return `
     <div class="shell">
       <div class="team-header">
-        <div class="emblem-lg" style="background:${team.color || '#666'}">${(team.short || team.name[0]).slice(0, 3)}</div>
+        <div class="emblem-lg" style="background:${team.color || '#666'}">${team.emblemUrl ? `<img src="${team.emblemUrl}" alt="">` : (team.short || team.name[0]).slice(0, 3)}</div>
         <div class="meta">
           <h1>${team.name}</h1>
           <div class="ctx">${team.city || ''}${team.city ? ' · ' : ''}Засновано ${team.founded || '—'} · Тренер: ${manager?.username ? '@' + manager.username : '<i>вільна команда</i>'}</div>
@@ -1138,6 +1165,12 @@ function attachHandlers() {
   document.querySelectorAll('[data-adm-edit-player]').forEach(n => n.addEventListener('click', () => {
     try { admEditPlayer(JSON.parse(n.getAttribute('data-adm-edit-player'))); } catch {}
   }));
+  // S54: cup actions
+  document.querySelectorAll('[data-cup]').forEach(n => n.addEventListener('click', () => {
+    go('cup', { cupId: n.getAttribute('data-cup') });
+  }));
+  document.querySelectorAll('[data-adm-advance-cup]').forEach(n => n.addEventListener('click', () => admAdvanceCup(n.getAttribute('data-adm-advance-cup'))));
+  document.querySelectorAll('[data-adm-del-cup]').forEach(n => n.addEventListener('click', () => admDeleteCup(n.getAttribute('data-adm-del-cup'))));
 }
 
 // Hooked from data-action="close-modal" inside the modal itself.
@@ -1233,6 +1266,23 @@ function renderFriendlies() {
   `;
 }
 
+let _frRefreshHandle = null;
+function scheduleFriendliesRefresh(upcoming) {
+  if (_frRefreshHandle) clearTimeout(_frRefreshHandle);
+  if (state.view !== 'friendlies') return;
+  if (!upcoming || upcoming.length === 0) return;
+  const next = upcoming.find(f => f.state === 'in_progress')
+            || upcoming.find(f => (new Date(f.scheduledAt) - Date.now()) < 5 * 60 * 1000);
+  if (!next) return;
+  const ms = next.state === 'in_progress' ? 15_000 : 30_000;
+  _frRefreshHandle = setTimeout(() => {
+    if (state.view === 'friendlies') {
+      state.params._loaded = false;
+      loadFriendlies();
+    }
+  }, ms);
+}
+
 async function loadFriendlies() {
   try {
     const [mine, world] = await Promise.all([
@@ -1252,6 +1302,7 @@ async function loadFriendlies() {
       recent: mine.recent,
       leagues, opponents,
     };
+    scheduleFriendliesRefresh(mine.upcoming);
     render();
   } catch (err) {
     state.params = { _loaded: true, upcoming: [], recent: [], leagues: [], opponents: {} };
@@ -1413,6 +1464,92 @@ async function createFriendly() {
 }
 
 // ============================================================================
+// Cups (S54) — list + bracket
+// ============================================================================
+
+function renderCups() {
+  if (!state.params._loaded) { loadCups(); return `<div class="shell"><div class="card">Завантаження…</div></div>`; }
+  const { cups } = state.params;
+  return `
+    <div class="shell">
+      <div class="dash-header"><div><h1>🏆 Кубки</h1><div class="ctx">Knock-out турніри. Адмін створює, тренери дивляться.</div></div></div>
+      ${cups.length === 0 ? '<div class="card empty">Турнірів ще немає. Адмін може створити з панелі.</div>' : `
+        <div class="cup-grid">
+          ${cups.map(c => `
+            <div class="card cup-tile clickable" data-cup="${c._id}">
+              <div class="cup-title">${c.name}</div>
+              <div class="cup-meta">${c.teamCount} команд · ${c.state === 'finished' ? '🏁 завершено' : c.state === 'active' ? '⚽ активний' : '⏱ скоро'}</div>
+              ${c.winnerTeamId ? '<div class="cup-winner">🏆 чемпіон визначений</div>' : ''}
+            </div>
+          `).join('')}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+async function loadCups() {
+  try {
+    const r = await API.get('/api/cups');
+    state.params = { _loaded: true, cups: r.cups };
+    render();
+  } catch { state.params = { _loaded: true, cups: [] }; render(); }
+}
+
+function renderCupDetail() {
+  if (!state.params._loaded) { loadCupDetail(); return `<div class="shell"><div class="card">Завантаження…</div></div>`; }
+  const { cup, teams } = state.params;
+  if (!cup) return `<div class="shell"><div class="card empty">Кубок не знайдено.</div></div>`;
+  const tn = (id) => teams[id?.toString()] || { name: '—', short: '—', color: '#666' };
+  return `
+    <div class="shell">
+      <div class="dash-header">
+        <div><h1>🏆 ${cup.name}</h1>
+          <div class="ctx">${cup.teamCount} команд · стан: <b>${cup.state}</b>${cup.winnerTeamId ? ' · 🥇 ' + (teams[cup.winnerTeamId.toString()]?.name || '') : ''}</div>
+        </div>
+      </div>
+      <div class="bracket">
+        ${cup.rounds.map((r, ri) => `
+          <div class="bracket-col">
+            <h3>${roundLabelUa(r.label)}</h3>
+            ${r.pairings.map(p => {
+              const h = tn(p.home), a = tn(p.away);
+              const w = p.winner?.toString();
+              return `
+                <div class="bracket-pair ${w ? 'decided' : ''}">
+                  <div class="bp-row ${w === p.home?.toString() ? 'win' : (w && w !== p.home?.toString() ? 'lose' : '')}">
+                    <span class="bp-dot" style="background:${h.color}"></span>
+                    <span class="bp-name">${h.name}</span>
+                    <span class="bp-score">${p.score ? p.score.home : '—'}</span>
+                  </div>
+                  <div class="bp-row ${w === p.away?.toString() ? 'win' : (w && w !== p.away?.toString() ? 'lose' : '')}">
+                    <span class="bp-dot" style="background:${a.color}"></span>
+                    <span class="bp-name">${a.name}</span>
+                    <span class="bp-score">${p.score ? p.score.away : '—'}</span>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function roundLabelUa(label) {
+  return ({ r16: '1/8', qf: 'Чвертьфінал', sf: 'Півфінал', final: 'Фінал' })[label] || label;
+}
+
+async function loadCupDetail() {
+  try {
+    const r = await API.get(`/api/cups/${state.params.cupId}`);
+    state.params = { _loaded: true, cup: r.cup, teams: r.teams, cupId: state.params.cupId };
+    render();
+  } catch { state.params = { _loaded: true, cup: null }; render(); }
+}
+
+// ============================================================================
 // Admin (S51) — only visible to users with isAdmin=true in DB
 // ============================================================================
 
@@ -1436,12 +1573,14 @@ function renderAdmin() {
         <button class="${tab === 'leagues' ? 'active' : ''}" data-admin-tab="leagues">Ліги</button>
         <button class="${tab === 'teams' ? 'active' : ''}" data-admin-tab="teams">Команди</button>
         <button class="${tab === 'players' ? 'active' : ''}" data-admin-tab="players">Гравці</button>
+        <button class="${tab === 'cups' ? 'active' : ''}" data-admin-tab="cups">Кубки</button>
       </div>
 
       ${tab === 'overview' ? renderAdminOverview(overview) : ''}
       ${tab === 'leagues' ? renderAdminLeagues(leagues) : ''}
       ${tab === 'teams' ? renderAdminTeams(leagues, teams, selectedLeague) : ''}
       ${tab === 'players' ? renderAdminPlayers(leagues, teams, selectedLeague, players, selectedTeam) : ''}
+      ${tab === 'cups' ? renderAdminCups(state.params.cups, state.params.allTeams) : ''}
     </div>
   `;
 }
@@ -1505,6 +1644,7 @@ function renderAdminTeams(leagues, teams, selectedLeague) {
         <input id="adm-tm-name" placeholder="Назва" />
         <input id="adm-tm-short" placeholder="ABC" maxlength="4" />
         <input id="adm-tm-color" type="color" value="#4f8cff" />
+        <input id="adm-tm-emblem" placeholder="Emblem URL (необовʼязково)" />
         <input id="adm-tm-tier" type="number" min="1" max="5" value="3" />
         <button class="primary" data-action="adm-create-team">+ Створити</button>
       </div>
@@ -1603,6 +1743,8 @@ async function loadAdmin(tab = 'overview') {
     ]);
     let teams = state.params.teams || [];
     let players = state.params.players || [];
+    let cups = state.params.cups || [];
+    let allTeams = state.params.allTeams || [];
     let selectedLeague = state.params.selectedLeague || lg.leagues[0]?._id;
     let selectedTeam = state.params.selectedTeam || null;
     if ((tab === 'teams' || tab === 'players') && selectedLeague) {
@@ -1613,16 +1755,101 @@ async function loadAdmin(tab = 'overview') {
       const pp = await API.get(`/api/admin/players?teamId=${selectedTeam}`);
       players = pp.players;
     }
+    if (tab === 'cups') {
+      const [cp, at] = await Promise.all([
+        API.get('/api/admin/cups'),
+        API.get('/api/admin/teams'),    // all teams (no leagueId filter — full list for picker)
+      ]);
+      cups = cp.cups;
+      allTeams = at.teams;
+    }
     state.params = {
       _loaded: true, tab,
-      overview: ov, leagues: lg.leagues, teams, players,
+      overview: ov, leagues: lg.leagues, teams, players, cups, allTeams,
       selectedLeague, selectedTeam,
     };
     render();
   } catch (err) {
-    state.params = { _loaded: true, tab: 'overview', overview: null, leagues: [], teams: [], players: [] };
+    state.params = { _loaded: true, tab: 'overview', overview: null, leagues: [], teams: [], players: [], cups: [], allTeams: [] };
     render();
   }
+}
+
+function renderAdminCups(cups, allTeams) {
+  return `
+    <div class="card">
+      <h2>Створити кубок</h2>
+      <div id="adm-cup-err"></div>
+      <div class="admin-form">
+        <input id="adm-cup-slug" placeholder="slug (champions-26)" />
+        <input id="adm-cup-name" placeholder="Champions Cup 2026" />
+        <select id="adm-cup-size">
+          <option value="4">4 команди (півфінали)</option>
+          <option value="8" selected>8 команд (1/4)</option>
+          <option value="16">16 команд (1/8)</option>
+        </select>
+        <button class="primary" data-action="adm-create-cup">+ Створити</button>
+      </div>
+      <div class="cup-team-picker" id="adm-cup-teams">
+        <div class="hint">Обери команди (натискай на чек-боксі):</div>
+        <div class="checkbox-grid">
+          ${(allTeams || []).map(t => `
+            <label class="cup-team-check">
+              <input type="checkbox" name="cup-team" value="${t._id}" />
+              <span class="cup-team-dot" style="background:${t.color}"></span>
+              <span>${t.name} <span class="muted">★${t.tier}</span></span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="card no-pad">
+      <table class="admin-table">
+        <thead><tr><th>Назва</th><th>Розмір</th><th>Стан</th><th>Раунд</th><th></th></tr></thead>
+        <tbody>
+          ${cups.map(c => `
+            <tr>
+              <td>${c.name}</td>
+              <td>${c.teamCount}</td>
+              <td>${c.state}</td>
+              <td>${c.currentRound}/${Math.log2(c.teamCount)}</td>
+              <td>
+                ${c.state === 'active' ? `<button class="ghost small" data-adm-advance-cup="${c._id}">↪ Advance</button>` : ''}
+                <button class="ghost danger small" data-adm-del-cup="${c._id}">✕</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function admCreateCup() {
+  const slug = document.getElementById('adm-cup-slug').value.trim();
+  const name = document.getElementById('adm-cup-name').value.trim();
+  const size = Number(document.getElementById('adm-cup-size').value);
+  const teamIds = [...document.querySelectorAll('input[name=cup-team]:checked')].map(n => n.value);
+  if (!slug || !name) return showErr('adm-cup-err', 'slug + name required');
+  if (teamIds.length !== size) return showErr('adm-cup-err', `треба точно ${size} команд (обрано ${teamIds.length})`);
+  try {
+    await API.post('/api/admin/cups', { slug, name, teamIds });
+    loadAdmin('cups');
+  } catch (err) { showErr('adm-cup-err', err.message); }
+}
+
+async function admAdvanceCup(id) {
+  try {
+    const r = await API.post(`/api/admin/cups/${id}/advance`);
+    alert(r.finished ? '🏆 Кубок завершено!' : 'Раунд просунуто');
+    loadAdmin('cups');
+  } catch (err) { alert(err.message); }
+}
+
+async function admDeleteCup(id) {
+  if (!confirm('Видалити кубок?')) return;
+  await API.del(`/api/admin/cups/${id}`);
+  loadAdmin('cups');
 }
 
 async function admCreateLeague() {
@@ -1644,10 +1871,11 @@ async function admCreateTeam() {
   const name = document.getElementById('adm-tm-name').value.trim();
   const short = document.getElementById('adm-tm-short').value.trim();
   const color = document.getElementById('adm-tm-color').value;
+  const emblemUrl = document.getElementById('adm-tm-emblem').value.trim();
   const tier = Number(document.getElementById('adm-tm-tier').value) || 3;
   if (!leagueId || !slug || !name || !short) return showErr('adm-tm-err', 'усі поля обовʼязкові');
   try {
-    await API.post('/api/admin/teams', { leagueId, slug, name, short, color, tier });
+    await API.post('/api/admin/teams', { leagueId, slug, name, short, color, emblemUrl, tier });
     state.params.selectedLeague = leagueId;
     loadAdmin('teams');
   } catch (err) { showErr('adm-tm-err', err.message); }
@@ -1701,8 +1929,9 @@ async function admEditTeam(id) {
   const name = prompt('Назва:', t.name); if (name == null) return;
   const short = prompt('Short (3-4 літери):', t.short); if (short == null) return;
   const color = prompt('Колір (#hex):', t.color); if (color == null) return;
+  const emblemUrl = prompt('Emblem URL (порожнє = без лого):', t.emblemUrl || ''); if (emblemUrl == null) return;
   const tier = Number(prompt('Tier (1-5):', t.tier)) || t.tier;
-  await API.patch(`/api/admin/teams/${id}`, { name, short, color, tier });
+  await API.patch(`/api/admin/teams/${id}`, { name, short, color, emblemUrl, tier });
   loadAdmin('teams');
 }
 
@@ -1785,6 +2014,7 @@ async function handleAction(action, payload) {
   if (action === 'adm-create-league')  return admCreateLeague();
   if (action === 'adm-create-team')    return admCreateTeam();
   if (action === 'adm-create-player')  return admCreatePlayer();
+  if (action === 'adm-create-cup')     return admCreateCup();
   if (action === 'close-popup' || action === 'close-modal') {
     closePopups(); closePlayerModal();
     return;
