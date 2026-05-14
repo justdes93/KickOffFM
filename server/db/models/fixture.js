@@ -33,6 +33,15 @@ const FixtureSchema = new mongoose.Schema({
   awayPresent:    { type: Boolean, default: false },
 
   workerId:       { type: String, default: null },                 // engine worker process / lock token
+
+  // S58: wall-clock pacing for league/cup live matches (15+3+15 real / 90 sim).
+  // Engine runs eagerly server-side; goals/score revealed progressively until
+  // wall-clock duration elapses, then state → 'finished'.
+  rngSeed:         { type: Number, default: null },
+  halfLenSec:      { type: Number, default: 2700 },                // 45 sim-min/half
+  simSpeedFactor:  { type: Number, default: 3 },                   // 15 real-min/half
+  halftimeRealSec: { type: Number, default: 180 },                 // 3 min real break
+  goals:           { type: [mongoose.Schema.Types.Mixed], default: () => [] },
 }, { timestamps: true });
 
 FixtureSchema.index({ scheduledAt: 1, state: 1 });

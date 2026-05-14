@@ -110,13 +110,47 @@ export default async function worldRoutes(app) {
     catch { return reply.code(400).send({ error: 'invalid_id' }); }
     if (!team) return reply.code(404).send({ error: 'team_not_found' });
     const roster = await Player.find({ teamId: team._id })
-      .select('-state.morale -state.fitness')   // hide live state
+      .select('-state.morale -state.fitness')
       .sort({ num: 1 }).lean();
     let manager = null;
     if (team.managerUserId) {
       manager = await User.findById(team.managerUserId).select('username').lean();
     }
-    return { team, roster, manager };
+    // S57: recent results + upcoming league fixtures, for team-detail page.
+    const [recent, upcoming] = await Promise.all([
+      MatchResult.find({
+        $or: [{ homeTeamId: team._id }, { awayTeamId: team._id }],
+      }).sort({ finishedAt: -1 }).limit(5).lean(),
+      Fixture.find({
+        $or: [{ homeTeamId: team._id }, { awayTeamId: team._id }],
+        state: { $in: ['scheduled', 'in_progress'] },
+      }).sort({ scheduledAt: 1 }).limit(5).lean(),
+    ]);
+    const oppIds = new Set();
+    for (const r of recent)    oppIds.add((r.homeTeamId.equals(team._id) ? r.awayTeamId : r.homeTeamId).toString());
+    for (const f of upcoming)  oppIds.add((f.homeTeamId.equals(team._id) ? f.awayTeamId : f.homeTeamId).toString());
+    const opps = await Team.find({ _id: { $in: [...oppIds] } })
+      .select('slug name short color emblemUrl').lean();
+    const oppMap = Object.fromEntries(opps.map(t => [t._id.toString(), t]));
+    const view = (m, finished = false) => {
+      const isHome = m.homeTeamId.equals(team._id);
+      const oppId = isHome ? m.awayTeamId : m.homeTeamId;
+      return {
+        id: m._id, scheduledAt: m.scheduledAt, finishedAt: m.finishedAt,
+        venue: isHome ? 'home' : 'away',
+        opponent: oppMap[oppId.toString()] || null,
+        ...(finished ? {
+          myScore: isHome ? m.homeScore : m.awayScore,
+          oppScore: isHome ? m.awayScore : m.homeScore,
+          outcome: m.homeScore === m.awayScore ? 'D' : ((isHome ? m.homeScore > m.awayScore : m.awayScore > m.homeScore) ? 'W' : 'L'),
+        } : { round: m.round }),
+      };
+    };
+    return {
+      team, roster, manager,
+      recent: recent.map(r => view(r, true)),
+      upcoming: upcoming.map(f => view(f)),
+    };
   });
 
   // ---- Claim ----

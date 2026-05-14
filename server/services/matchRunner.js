@@ -50,21 +50,49 @@ export async function runFixture(fixture, opts = {}) {
   const home = await loadTeamForEngine(fixture.homeTeamId);
   const away = await loadTeamForEngine(fixture.awayTeamId);
 
-  const formationH = home.tactics?.formation || '4-3-3';
-  const formationA = away.tactics?.formation || '4-3-3';
+  // S57: friendly pre-match tactics overrides take precedence over team defaults.
+  const homeTactics = fixture.homeTacticsOverride || home.tactics;
+  const awayTactics = fixture.awayTacticsOverride || away.tactics;
+  home.tactics = homeTactics;
+  away.tactics = awayTactics;
+  const formationH = homeTactics?.formation || '4-3-3';
+  const formationA = awayTactics?.formation || '4-3-3';
 
-  const seed = (fixture._id.toString().slice(-8) | 0) ^ Date.now() & 0xfffffff;
+  // S60: keep the seed stable across re-sims so deterministic client playback
+  // continues to match after a new liveCommand is appended.
+  const seed = (typeof fixture.rngSeed === 'number' && fixture.rngSeed !== null)
+    ? fixture.rngSeed
+    : ((fixture._id.toString().slice(-8) | 0) ^ Date.now() & 0xfffffff);
   const e = new MatchEngine({
     home, away,
-    homeTactics: home.tactics, awayTactics: away.tactics,
+    homeTactics, awayTactics,
     homeLineup: defaultLineup(home, formationH),
     awayLineup: defaultLineup(away, formationA),
     rng: mulberry32(seed),
-    halfLenSec,                                                // S49: friendly mode
+    halfLenSec,
   });
 
+  // S60: replay mid-match commands at their simTime. Sorted ascending for
+  // deterministic application across re-sims and across clients.
+  const commands = [...(fixture.liveCommands || [])].sort((a, b) => (a.simTime ?? 0) - (b.simTime ?? 0));
+  let cmdIdx = 0;
   let safety = 0;
-  while (e.phase !== 'full' && safety++ < 200000) e.tick();
+  while (e.phase !== 'full' && safety++ < 200000) {
+    // Apply any pending command whose submission simTime has been reached.
+    while (cmdIdx < commands.length && (commands[cmdIdx].simTime ?? 0) <= e.gameTime) {
+      const c = commands[cmdIdx++];
+      try {
+        if (c.type === 'tactics') {
+          e.submitTacticalChange(c.side, c.payload || {});
+        } else if (c.type === 'sub') {
+          e.substitute(c.side, c.payload?.outNum, c.payload?.inNum);
+        }
+      } catch (err) {
+        log.warn?.(`[match] command replay failed: ${err.message}`);
+      }
+    }
+    e.tick();
+  }
   if (safety >= 200000) throw new Error('match_runaway');
 
   return {
@@ -96,7 +124,17 @@ export async function executeFixture(fixtureId, opts = {}) {
 
   try {
     const out = await runFixture(fixture, { log });
-    // Persist result
+    // S58: persist intermediate state — keep fixture in_progress so the wall-clock
+    // playback can reveal goals over time. MatchResult is finalised by the
+    // scheduler when wall-clock duration elapses (or here for friendly fixtures
+    // that don't go through the wall-clock path).
+    fixture.homeScore = out.homeScore;
+    fixture.awayScore = out.awayScore;
+    fixture.rngSeed = out.seed;
+    fixture.goals = out.goalsList;
+    fixture.workerId = null;
+    // We DO write the MatchResult upfront so existing dashboards keep working,
+    // but mark finishedAt as null until wall-clock finalisation.
     await MatchResult.create({
       fixtureId: fixture._id,
       worldId: fixture.worldId,
@@ -111,17 +149,12 @@ export async function executeFixture(fixtureId, opts = {}) {
       tacticsAway: out.finalEngine.teams.away.tactics,
       finishedAt: new Date(),
     });
-    fixture.state = 'finished';
-    fixture.finishedAt = new Date();
-    fixture.homeScore = out.homeScore;
-    fixture.awayScore = out.awayScore;
-    fixture.workerId = null;
     await fixture.save();
     // S48: bump per-player season stats for league fixtures only (skip cup + friendly).
     if (fixture.leagueId && fixture.seasonId) {
       await bumpSeasonStats(out.finalEngine, fixture);
     }
-    log.info?.(`[match] ${fixture._id} finished — ${out.homeScore}-${out.awayScore}`);
+    log.info?.(`[match] ${fixture._id} simulated — final ${out.homeScore}-${out.awayScore} (revealing over wall-clock)`);
     return { fixtureId: fixture._id, homeScore: out.homeScore, awayScore: out.awayScore };
   } catch (err) {
     log.error?.(`[match] ${fixture._id} failed: ${err.message}`);
@@ -155,7 +188,36 @@ async function bumpSeasonStats(engine, fixture) {
   if (ops.length) await Promise.allSettled(ops);
 }
 
-// S49: Friendly match runner — same flow, separate collection, shorter halves.
+// S60: Re-simulate an in-progress friendly with the current liveCommands.
+// Called after a manager submits a mid-match command. Keeps rngSeed stable so
+// the simulation through the time of the command is byte-for-byte identical to
+// the prior run; only the post-command trajectory differs. Updates goals[] +
+// scores so progressive reveal stays correct.
+export async function resimulateFriendly(friendlyId, opts = {}) {
+  const { log = console } = opts;
+  const fr = await Friendly.findById(friendlyId);
+  if (!fr || fr.state !== 'in_progress') return null;
+  try {
+    const out = await runFixture(fr, { log, halfLenSec: fr.halfLenSec || 2700 });
+    fr.homeScore = out.homeScore;
+    fr.awayScore = out.awayScore;
+    fr.stats = out.stats;
+    fr.goals = out.goalsList;
+    fr.markModified('goals');
+    fr.markModified('stats');
+    await fr.save();
+    log.info?.(`[match] friendly ${fr._id} re-simulated — ${out.homeScore}-${out.awayScore} (${(fr.liveCommands || []).length} commands)`);
+    return { ok: true };
+  } catch (err) {
+    log.error?.(`[match] re-sim ${fr._id} failed: ${err.message}`);
+    return null;
+  }
+}
+
+// S49+S55: Friendly match runner. Engine runs eagerly (synchronously, <1s), but
+// the friendly stays in `in_progress` for the full wall-clock duration so the UI
+// can reveal goals progressively. Scheduler's finalize pass flips it to `finished`
+// once that wall-clock window elapses.
 export async function executeFriendly(friendlyId, opts = {}) {
   const { log = console, lockId = `worker-${process.pid}-${Date.now()}` } = opts;
 
@@ -170,16 +232,20 @@ export async function executeFriendly(friendlyId, opts = {}) {
   }
 
   try {
-    const out = await runFixture(fr, { log, halfLenSec: fr.halfLenSec || 600 });
-    fr.state = 'finished';
-    fr.finishedAt = new Date();
+    const out = await runFixture(fr, { log, halfLenSec: fr.halfLenSec || 2700 });
+    // Store full engine output but keep state=in_progress for wall-clock reveal.
     fr.homeScore = out.homeScore;
     fr.awayScore = out.awayScore;
     fr.stats = out.stats;
     fr.goals = out.goalsList;
+    fr.rngSeed = out.seed;
     fr.workerId = null;
+    // S62 safety: Mongoose can miss change-detection on Mixed paths when the
+    // array reference is replaced. markModified guarantees both fields write.
+    fr.markModified('goals');
+    fr.markModified('stats');
     await fr.save();
-    log.info?.(`[match] friendly ${fr._id} finished — ${out.homeScore}-${out.awayScore}`);
+    log.info?.(`[match] friendly ${fr._id} simulated — final ${out.homeScore}-${out.awayScore} (revealing over wall-clock)`);
     return { friendlyId: fr._id, homeScore: out.homeScore, awayScore: out.awayScore };
   } catch (err) {
     log.error?.(`[match] friendly ${fr._id} failed: ${err.message}`);

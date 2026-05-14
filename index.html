@@ -5,16 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0e1116" />
   <title>Kick-Off FM</title>
-  <script>
-    document.write('<link rel="stylesheet" href="styles.css?v=' + Date.now() + '">');
-  </script>
+  <!-- S75: absolute paths so SPA deep-links like /admin/teams don't resolve
+       these relative imports against the URL directory (which would hit the
+       SPA fallback and return index.html as JS, hanging the bootstrap). -->
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <div id="app">
     <div class="bootstrap-loader">Завантаження…</div>
   </div>
   <script type="module">
-    import('./app.js?v=' + Date.now());
+    import('/app.js?v=' + Date.now());
   </script>
 </body>
 </html>

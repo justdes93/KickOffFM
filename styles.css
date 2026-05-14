@@ -3,19 +3,31 @@
 * { box-sizing: border-box; }
 
 :root {
-  --bg:        #0e1116;
-  --bg-2:      #161a22;
-  --bg-3:      #1d232e;
-  --fg:        #e2e7ee;
-  --muted:     #8a94a3;
-  --accent:    #4f8cff;
-  --accent-2:  #6ce58a;
-  --warn:      #ffcb45;
-  --error:     #ff7676;
-  --border:    rgba(255,255,255,0.08);
-  --border-2:  rgba(255,255,255,0.15);
-  --radius:    8px;
-  --shadow:    0 6px 24px rgba(0,0,0,0.4);
+  /* S57 palette refresh: deep navy + electric blue + signature yellow. */
+  --bg:        #0a1228;
+  --bg-2:      #142042;
+  --bg-3:      #1c2c5a;
+  --fg:        #f0f5ff;
+  --muted:     #8aa3d2;
+  --accent:    #3b82f6;            /* electric blue */
+  --accent-2:  #ffd23f;            /* bright yellow */
+  --accent-3:  #60a5fa;            /* lighter blue for hover */
+  --warn:      #ffd23f;
+  --error:     #ff5566;
+  --success:   #34d399;
+  --border:    rgba(255,255,255,0.10);
+  --border-2:  rgba(255,255,255,0.20);
+  --radius:    10px;
+  --shadow:    0 8px 28px rgba(0,0,0,0.45);
+  --glow:      0 0 0 1px rgba(59,130,246,0.35), 0 4px 18px rgba(59,130,246,0.15);
+}
+
+body {
+  background:
+    radial-gradient(1100px 600px at 80% -10%, rgba(59,130,246,0.18), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(255,210,63,0.07), transparent 55%),
+    var(--bg);
+  min-height: 100vh;
 }
 
 html, body {
@@ -31,19 +43,23 @@ a:hover { text-decoration: underline; }
 
 button {
   background: var(--accent); color: #fff;
-  border: none; border-radius: 6px;
+  border: none; border-radius: 8px;
   padding: 10px 18px;
-  font-size: 14px; font-weight: 500;
+  font-size: 14px; font-weight: 600; letter-spacing: 0.2px;
   cursor: pointer;
-  transition: background 0.15s, transform 0.05s;
+  box-shadow: 0 4px 14px rgba(59,130,246,0.30);
+  transition: background 0.15s, transform 0.05s, box-shadow 0.15s;
 }
-button:hover:not(:disabled) { background: #6ba3ff; }
+button:hover:not(:disabled) { background: var(--accent-3); box-shadow: 0 6px 20px rgba(59,130,246,0.40); }
 button:active:not(:disabled) { transform: translateY(1px); }
-button:disabled { background: #444; color: #888; cursor: not-allowed; }
-button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border-2); }
-button.ghost:hover:not(:disabled) { background: var(--bg-3); }
-button.danger { background: var(--error); }
-button.danger:hover:not(:disabled) { background: #ff8a8a; }
+button:disabled { background: #2c3650; color: #6b7a98; cursor: not-allowed; box-shadow: none; }
+button.primary { background: var(--accent-2); color: #0a1228; box-shadow: 0 4px 14px rgba(255,210,63,0.35); }
+button.primary:hover:not(:disabled) { background: #ffdb6c; box-shadow: 0 6px 22px rgba(255,210,63,0.45); }
+button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border-2); box-shadow: none; }
+button.ghost:hover:not(:disabled) { background: var(--bg-3); box-shadow: none; }
+button.danger { background: var(--error); box-shadow: 0 4px 14px rgba(255,85,102,0.30); }
+button.danger:hover:not(:disabled) { background: #ff7a8a; }
+button.small { padding: 4px 10px; font-size: 12px; box-shadow: none; }
 
 input, select {
   background: var(--bg-2); color: var(--fg);
@@ -76,27 +92,45 @@ label.field .label { display: block; margin-bottom: 4px; }
 .topbar {
   display: flex; align-items: center;
   padding: 14px 24px;
-  background: var(--bg-2); border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(20,32,66,0.95), rgba(10,18,40,0.95));
+  border-bottom: 2px solid var(--accent-2);
+  backdrop-filter: blur(12px);
   margin-bottom: 0;
+  position: sticky; top: 0; z-index: 50;
 }
 .topbar .brand {
-  font-size: 16px; font-weight: 700;
+  font-size: 17px; font-weight: 800;
   color: var(--fg); letter-spacing: 0.4px;
 }
-.topbar .brand .tag { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 8px; }
-.topbar .nav { display: flex; gap: 16px; margin-left: auto; align-items: center; }
-.topbar .nav a, .topbar .nav span.user { color: var(--muted); font-size: 13px; }
-.topbar .nav a.active { color: var(--fg); }
-.topbar button { padding: 6px 12px; font-size: 12px; }
+.topbar .brand .tag {
+  color: #0a1228; background: var(--accent-2);
+  font-weight: 700; font-size: 10px; letter-spacing: 1px;
+  padding: 2px 8px; margin-left: 10px; border-radius: 999px;
+  text-transform: uppercase;
+}
+.topbar .nav { display: flex; gap: 18px; margin-left: auto; align-items: center; }
+.topbar .nav a, .topbar .nav span.user { color: var(--muted); font-size: 13px; cursor: pointer; transition: color 0.15s; }
+.topbar .nav a:hover { color: var(--fg); text-decoration: none; }
+.topbar .nav a.active { color: var(--accent-2); font-weight: 600; }
+.topbar button { padding: 6px 12px; font-size: 12px; box-shadow: none; }
 
 /* ------- Cards ------- */
 .card {
-  background: var(--bg-2); border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--bg-2), rgba(20,32,66,0.7));
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px; margin-bottom: 16px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.25);
 }
-.card h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
-.card h3 { margin: 16px 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.card h2 {
+  margin: 0 0 12px; font-size: 16px; font-weight: 700; letter-spacing: 0.2px;
+  display: inline-block; position: relative; padding-bottom: 6px;
+}
+.card h2::after {
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0;
+  height: 2px; background: var(--accent-2); border-radius: 1px;
+}
+.card h3 { margin: 16px 0 8px; font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 1.2px; }
 .card p { margin: 0 0 12px; color: var(--muted); }
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -227,6 +261,77 @@ label.field .label { display: block; margin-bottom: 4px; }
   display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 12px;
 }
+/* S57: pitch left + settings right, no scroll */
+.shell.wide { max-width: 1280px; }
+.tactics-layout {
+  display: grid; grid-template-columns: minmax(380px, 1fr) minmax(420px, 1.2fr);
+  gap: 18px; align-items: start;
+}
+@media (max-width: 900px) {
+  .tactics-layout { grid-template-columns: 1fr; }
+}
+.tactics-settings { position: sticky; top: 80px; }
+.tactics-grid.compact {
+  grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.tactics-grid.compact .field { margin-bottom: 0; }
+
+.next-match-banner {
+  border-left: 3px solid var(--accent-2);
+  background: linear-gradient(180deg, rgba(255,210,63,0.06), rgba(20,32,66,0.7));
+}
+.next-match-banner .nm-label {
+  font-size: 10px; color: var(--accent-2); font-weight: 800;
+  letter-spacing: 1.4px; text-transform: uppercase; margin-bottom: 8px;
+}
+.next-match-banner .nm-row {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  flex-wrap: wrap;
+}
+.next-match-banner .nm-opp { font-size: 18px; }
+.next-match-banner .nm-opp strong { color: var(--accent-3); }
+.next-match-banner .nm-when { font-size: 13px; color: var(--muted); }
+.next-match-banner .nm-hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.next-match-banner.muted { border-left-color: var(--border-2); }
+
+/* S57: standings table + side schedule */
+.standings-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px; align-items: start;
+}
+@media (max-width: 900px) { .standings-layout { grid-template-columns: 1fr; } }
+.standings-layout .team-cell { display: flex; align-items: center; gap: 10px; }
+.standings-table tr.clickable { cursor: pointer; }
+.standings-table tr.clickable:hover { background: rgba(59,130,246,0.08); }
+.standings-table tr.me { background: rgba(255,210,63,0.10); }
+.standings-table tr.me:hover { background: rgba(255,210,63,0.16); }
+.standings-table .pts { color: var(--accent-2); font-weight: 800; }
+.upcoming-schedule .card { padding: 14px 16px; }
+.round-row {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: center; gap: 10px;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.round-row:first-of-type { border-top: none; }
+.rr-team { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.rr-away { justify-content: flex-end; }
+.rr-vs { color: var(--muted); font-size: 11px; }
+.rr-when { font-size: 11px; color: var(--muted); padding: 0 2px 6px; }
+
+/* S57: team detail page */
+.team-detail-grid {
+  display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 16px; align-items: start;
+}
+/* S57: friendly row with optional tactics button on the right */
+.fixture-row.friendly-row {
+  grid-template-columns: 100px 1fr 40px 110px auto;
+}
+.fixture-row .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+@media (max-width: 900px) { .team-detail-grid { grid-template-columns: 1fr; } }
+.td-side .card { padding: 16px; }
+.roster-table tr.clickable { cursor: pointer; }
+.roster-table tr.clickable:hover { background: rgba(59,130,246,0.08); }
 
 /* ------- Match result ------- */
 .score-line {
@@ -737,15 +842,25 @@ button:not(.ghost):not(.danger):not(.small):not(.duty-chip):not(.league-tab):not
    ============================================================================ */
 
 .team-header .emblem-lg img,
-.dash-header .swatch img {
+.dash-header .swatch img,
+.team-tile .swatch img {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   object-fit: contain;
-  padding: 4px;
   z-index: 1;
 }
 .team-header .emblem-lg,
-.dash-header .swatch { position: relative; }
+.dash-header .swatch,
+.team-tile .swatch { position: relative; }
+
+/* When an emblem image is shown, drop the color swatch styling so the
+   emblem stands on its own without a colored disc behind it. */
+.swatch.has-emblem,
+.emblem-lg.has-emblem {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
 
 /* ============================================================================
    S53 — Live match indicator + auto-refresh
@@ -824,3 +939,248 @@ button:not(.ghost):not(.danger):not(.small):not(.duty-chip):not(.league-tab):not
 .cup-team-check:hover { background: rgba(255,255,255,0.04); }
 .cup-team-check input { width: auto; margin: 0; }
 .cup-team-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+
+/* ============================================================================
+   S55 — Admin team/player dedicated form pages + clickable rows
+   ============================================================================ */
+.admin-action-bar {
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
+}
+.admin-action-bar .admin-filter { flex: 1; }
+.admin-action-bar .primary { margin-left: auto; }
+
+.admin-table tr.clickable { cursor: pointer; }
+.admin-table tr.clickable:hover { background: rgba(79,140,255,0.06); }
+
+.mini-emblem {
+  width: 28px; height: 28px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: rgba(255,255,255,0.95);
+  position: relative; overflow: hidden;
+}
+.mini-emblem img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: contain;
+}
+.mini-emblem.has-emblem {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.form-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  gap: 14px 18px;
+  margin-top: 8px;
+}
+.form-grid .field { display: flex; flex-direction: column; }
+.form-grid .field.full { grid-column: 1 / -1; }
+.form-grid .field .label {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.4px; margin-bottom: 4px;
+}
+.form-grid input, .form-grid select { width: 100%; }
+.form-grid input[type=color] { padding: 2px; height: 36px; max-width: 80px; }
+.form-actions {
+  display: flex; gap: 10px; justify-content: flex-end;
+  margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 600px) {
+  .form-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================================
+   S55 — Friendly invitations + live-pill + live match view
+   ============================================================================ */
+.invite-card { border-left: 3px solid var(--warn); }
+.invite-card h2 { margin-top: 0; }
+.invite-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px; border-radius: 6px;
+  background: rgba(255,255,255,0.02);
+  margin-bottom: 8px;
+}
+.invite-row:last-child { margin-bottom: 0; }
+.invite-meta { flex: 1; font-size: 13px; }
+.invite-meta .challenger { font-weight: 700; color: var(--accent); }
+.invite-meta .muted { font-size: 11px; color: var(--muted); }
+.invite-actions { display: flex; gap: 8px; }
+.invite-actions button { padding: 6px 14px; font-size: 13px; }
+
+.live-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-left: 12px; padding: 6px 12px;
+  background: rgba(255,40,40,0.12);
+  border: 1px solid rgba(255,40,40,0.35);
+  border-radius: 999px;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  animation: pill-pulse 2.4s ease-in-out infinite;
+}
+.live-pill:hover { background: rgba(255,40,40,0.20); }
+.live-pill.invite {
+  background: rgba(255,170,40,0.12);
+  border-color: rgba(255,170,40,0.40);
+  animation: none;
+}
+.live-pill.prematch {
+  background: rgba(255,210,63,0.12);
+  border-color: rgba(255,210,63,0.40);
+  animation: none;
+}
+.live-pill.prematch .lp-vs { color: var(--muted); font-size: 11px; padding: 0 2px; }
+.live-pill .lp-icon { font-size: 12px; }
+
+/* S59 — waiting-room countdown card */
+.wait-card { text-align: center; padding: 32px 24px; }
+.wait-badge {
+  display: inline-block; padding: 4px 14px;
+  background: var(--accent-2); color: #0a1228;
+  font-size: 11px; font-weight: 800; letter-spacing: 1px;
+  border-radius: 999px; text-transform: uppercase;
+  margin-bottom: 18px;
+}
+.wait-matchup {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: center; gap: 24px; margin: 12px 0 18px;
+}
+.wait-team { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.wait-name { font-weight: 700; font-size: 18px; }
+.wait-name.me { color: var(--accent-3); }
+.wait-vs { color: var(--muted); font-size: 16px; font-weight: 600; }
+.wait-countdown {
+  font-size: 64px; font-weight: 800; font-variant-numeric: tabular-nums;
+  letter-spacing: 4px; color: var(--accent-2);
+  margin: 18px 0 8px;
+  text-shadow: 0 0 22px rgba(255,210,63,0.30);
+}
+.wait-countdown.imminent { color: var(--error); animation: pulse-imminent 1s ease-in-out infinite; }
+@keyframes pulse-imminent {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.55; }
+}
+.wait-hint { color: var(--muted); font-size: 13px; }
+.wait-actions {
+  display: flex; gap: 10px; justify-content: center;
+  margin-top: 24px;
+}
+.live-pill .lp-team { font-weight: 700; color: var(--fg); }
+.live-pill .lp-score { font-weight: 800; font-size: 13px; }
+.live-pill .lp-min { color: var(--muted); margin-left: 4px; }
+@keyframes pill-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,40,40,0); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,40,40,0.10); }
+}
+
+.live-match { text-align: center; padding: 24px; }
+.live-match .live-indicator {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--error); font-weight: 700;
+  letter-spacing: 1px; margin-bottom: 16px;
+}
+.live-match .score-line.big {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: center; gap: 24px; margin: 16px 0;
+}
+.live-match .team-side {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.live-match .team-side .team-name { font-size: 14px; font-weight: 600; }
+.live-match .score-block { text-align: center; }
+.live-match .score-big {
+  font-size: 48px; font-weight: 800; font-variant-numeric: tabular-nums;
+  line-height: 1; letter-spacing: 1px;
+}
+.live-match .score-big .vs { color: var(--muted); font-size: 32px; margin: 0 6px; }
+.live-match .minute {
+  margin-top: 6px; font-size: 18px; color: var(--accent);
+  font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.live-match h3 { text-align: left; }
+.live-match .actions { margin-top: 24px; }
+.live-match .actions .ghost {
+  background: transparent; border: 1px solid var(--border-2);
+}
+
+/* ============================================================================
+   S56 — Live friendly: embed legacy screen-match inside SPA shell.
+   Hide controls that don't apply in wall-clock multiplayer mode.
+   ============================================================================ */
+.live-spa {
+  max-width: 1400px; margin: 16px auto; padding: 0 12px;
+}
+.live-spa-topbar { margin-bottom: 8px; }
+
+/* S74 — bootstrap loading state shown while engine fast-forwards to current minute */
+.live-bootstrap {
+  text-align: center; padding: 48px 24px;
+}
+.live-bootstrap-spinner {
+  width: 48px; height: 48px;
+  margin: 0 auto 18px;
+  border: 4px solid var(--border-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: live-spin 0.9s linear infinite;
+}
+@keyframes live-spin {
+  to { transform: rotate(360deg); }
+}
+.live-bootstrap-text {
+  color: var(--muted); font-size: 14px;
+  margin-bottom: 18px;
+}
+
+/* S75 — tg-link auto-poll status */
+.tg-poll-status {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--muted);
+  padding: 8px 0;
+}
+.tg-poll-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent-2);
+  animation: live-spin 1.4s ease-in-out infinite alternate;
+}
+.live-spa #screen-match { display: block; }
+/* S60: keep tactics modal trigger + subs/tactics modal visible for managers.
+   Speed/pause/debug/quit are still single-player-only. */
+.live-spa .controls label,
+.live-spa #m-pause,
+.live-spa #m-quit,
+.live-spa #m-debug {
+  display: none !important;
+}
+/* legacy `.screen` may set display:none unless `.active` — we always show */
+.live-spa .screen { display: block !important; }
+
+/* S62 — subs panel inside live tactics modal */
+.live-spa #m-onpitch .player,
+.live-spa #m-bench .player {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 10px; margin-bottom: 4px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px; cursor: pointer;
+  border: 2px solid transparent;
+  transition: background 0.12s, border-color 0.12s, transform 0.05s;
+}
+.live-spa #m-onpitch .player:hover,
+.live-spa #m-bench .player:hover { background: rgba(59,130,246,0.10); }
+.live-spa #m-onpitch .player.selected {
+  border-color: var(--accent-2);
+  background: rgba(255,210,63,0.15);
+  font-weight: 700;
+}
+.live-spa #m-bench .player.eligible {
+  border-color: rgba(52,211,153,0.55);
+  background: rgba(52,211,153,0.10);
+}
+.live-spa #m-bench .player.selected {
+  border-color: var(--accent);
+  background: rgba(59,130,246,0.20);
+  font-weight: 700;
+}
+.live-spa #m-bench .player.dim { opacity: 0.4; }
+.live-spa #m-onpitch .player.tired { color: var(--warn); }

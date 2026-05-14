@@ -39,7 +39,7 @@ const TeamSchema = new mongoose.Schema({
     longShotFreq: 'sometimes',
     cornerRoutine: 'in_swinger',
     freeKickRoutine: 'auto',
-    timeWasting: 'never',
+    timeWasting: 'sometimes',           // S62: middle, not extreme
   }) },
 
   // Default lineup overrides — { slotId: playerId } map, optional.

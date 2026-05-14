@@ -13,6 +13,8 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import staticPlugin from '@fastify/static';
 import websocket from '@fastify/websocket';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,16 +46,45 @@ async function build() {
       transport = { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } };
     } catch { /* not installed — fall back to plain JSON logs */ }
   }
+  const isProd = process.env.NODE_ENV === 'production';
+
+  // S61 hardening: require a real JWT_SECRET in production — fail-fast instead
+  // of silently using the dev fallback.
+  if (isProd && !process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET must be set in production');
+  }
+
   const app = Fastify({
     logger: {
-      level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+      level: isProd ? 'info' : 'debug',
       transport,
     },
+    // Trust Fly's proxy so rate-limit + req.ip reflect real client IP, not the edge.
+    trustProxy: true,
   });
 
   // ---- Plugins ----
+  // S61: helmet for security headers. CSP is disabled for now (our index.html
+  // boot uses inline document.write + inline import); we'll re-enable with a
+  // nonce-based policy in a follow-up.
+  await app.register(helmet, {
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'same-site' },
+    referrerPolicy: { policy: 'no-referrer' },
+  });
+  // S61: rate-limit. Global cap = 300 req/min; auth routes get a stricter
+  // override below. trustProxy already set on Fastify so IP is real-client.
+  await app.register(rateLimit, {
+    global: true,
+    max: 300,
+    timeWindow: '1 minute',
+    skipOnError: true,           // never deny on internal rate-limit-store errors
+  });
   await app.register(cors, {
-    origin: true,
+    // Only our prod domain + localhost in dev — reflecting any origin with
+    // credentials:true was dangerous if we ever switch to cookie auth.
+    origin: isProd ? ['https://kickoff-fm.fly.dev'] : true,
     credentials: true,
   });
   await app.register(jwt, {
@@ -64,14 +95,37 @@ async function build() {
   await app.register(websocket);
 
   // Serve client static files (index.html, main.js, etc.) at root.
+  // wildcard:false stops the plugin from grabbing every GET — that lets the
+  // notFoundHandler below serve index.html for SPA deep links.
   await app.register(staticPlugin, {
     root: ROOT,
     prefix: '/',
     index: 'index.html',
-    // Allow main.js / engine.js / etc. to be served as ESM modules
+    wildcard: false,
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript');
     },
+  });
+
+  // S58: SPA fallback — any non-/api/ path that didn't match a static file should
+  // serve index.html so client-side router can pick it up (deep-linking support).
+  app.setNotFoundHandler((req, reply) => {
+    if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not_found' });
+    return reply.sendFile('index.html');
+  });
+
+  // S61: global error handler — never leak stack traces or internal messages
+  // to clients. Rate-limit returns a structured 429 we surface as `rate_limited`.
+  app.setErrorHandler((err, req, reply) => {
+    req.log.error({ err, url: req.url, method: req.method }, 'unhandled error');
+    if (reply.sent) return;
+    if (err.statusCode === 429) {
+      return reply.code(429).send({ error: 'rate_limited', retryAfter: err.retryAfter });
+    }
+    const status = err.statusCode && err.statusCode < 600 ? err.statusCode : 500;
+    return reply.code(status).send({
+      error: status === 500 ? 'internal_error' : (err.code || err.error || 'error'),
+    });
   });
 
   // ---- Routes ----
@@ -145,7 +199,34 @@ async function start() {
 
   // Connect to DB in background — endpoints that need it can check `app.dbReady`.
   connectDb()
-    .then(() => { app.dbReady = true; app.log.info('DB ready'); })
+    .then(async () => {
+      app.dbReady = true;
+      app.log.info('DB ready');
+      // S76: clean orphan Team.managerUserId refs (left over when users are
+      // deleted directly in Mongo without cascade). Runs once per server start.
+      try {
+        const { Team, User } = Models;
+        const teams = await Team.find({ managerUserId: { $ne: null } })
+          .select('_id managerUserId').lean();
+        if (teams.length) {
+          const userIds = [...new Set(teams.map(t => t.managerUserId.toString()))];
+          const users = await User.find({ _id: { $in: userIds } }).select('_id').lean();
+          const validIds = new Set(users.map(u => u._id.toString()));
+          const orphanIds = teams
+            .filter(t => !validIds.has(t.managerUserId.toString()))
+            .map(t => t._id);
+          if (orphanIds.length) {
+            await Team.updateMany(
+              { _id: { $in: orphanIds } },
+              { $set: { managerUserId: null } }
+            );
+            app.log.info(`[startup] freed ${orphanIds.length} team(s) with deleted-user manager refs`);
+          }
+        }
+      } catch (err) {
+        app.log.warn({ err: err.message }, '[startup] orphan-manager cleanup failed');
+      }
+    })
     .catch((err) => {
       app.log.warn({ err: err.message }, 'Mongo connection failed — endpoints requiring DB will 503 until reconnected.');
     });

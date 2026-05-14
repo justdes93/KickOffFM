@@ -17,7 +17,8 @@
 //   PATCH  /api/admin/leagues/:id           — update
 //   DELETE /api/admin/leagues/:id           — delete (only if no teams)
 
-import { World, League, Season, Team, Player, User, Cup, Fixture, MatchResult } from '../db/models/index.js';
+import { World, League, Season, Team, Player, User, Cup, Fixture, MatchResult, Friendly } from '../db/models/index.js';
+import { genPlayer } from '../../data.js';
 
 const dbReady = (app, reply) => {
   if (!app.dbReady) { reply.code(503).send({ error: 'db_not_ready' }); return false; }
@@ -26,6 +27,54 @@ const dbReady = (app, reply) => {
 
 export default async function adminRoutes(app) {
   const guard = { preHandler: [app.authenticate, app.requireAdmin] };
+
+  // ---- S60 TG diagnostics ----
+  // Quick admin-only inspection: returns each user's TG-linkage status + their
+  // managed-team slug. Use to debug why an invite isn't arriving — if hasChat
+  // is false, the opponent never `/start`-ed the bot.
+  // S76: manual orphan-manager cleanup. Same logic that runs on startup —
+  // exposed as an admin trigger so user can re-run after deleting accounts
+  // directly in Mongo. Frees any Team whose managerUserId points at a
+  // user that no longer exists.
+  app.post('/api/admin/cleanup-orphan-managers', guard, async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const teams = await Team.find({ managerUserId: { $ne: null } })
+      .select('_id name managerUserId').lean();
+    if (!teams.length) return { freed: 0, teams: [] };
+    const userIds = [...new Set(teams.map(t => t.managerUserId.toString()))];
+    const users = await User.find({ _id: { $in: userIds } }).select('_id').lean();
+    const validIds = new Set(users.map(u => u._id.toString()));
+    const orphans = teams.filter(t => !validIds.has(t.managerUserId.toString()));
+    if (!orphans.length) return { freed: 0, teams: [] };
+    await Team.updateMany(
+      { _id: { $in: orphans.map(t => t._id) } },
+      { $set: { managerUserId: null } }
+    );
+    app.log.info(`[admin] manually freed ${orphans.length} team(s) with orphan manager refs`);
+    return { freed: orphans.length, teams: orphans.map(t => ({ _id: t._id, name: t.name })) };
+  });
+
+  app.get('/api/admin/tg-status', guard, async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const users = await User.find().select('username email telegramChatId telegramLinkToken currentTeamId isAdmin').lean();
+    const teamIds = users.map(u => u.currentTeamId).filter(Boolean);
+    const teams = await Team.find({ _id: { $in: teamIds } }).select('slug name').lean();
+    const teamMap = Object.fromEntries(teams.map(t => [t._id.toString(), t]));
+    return {
+      botReady: !!app.tgService?.ready,
+      botUsername: app.tgService?.botUsername || null,
+      users: users.map(u => ({
+        username: u.username,
+        email: u.email,
+        isAdmin: !!u.isAdmin,
+        hasChat: !!u.telegramChatId,
+        chatIdTail: u.telegramChatId ? String(u.telegramChatId).slice(-4) : null,
+        linkPending: !!u.telegramLinkToken,
+        team: u.currentTeamId ? (teamMap[u.currentTeamId.toString()]?.name || u.currentTeamId.toString()) : null,
+        teamSlug: u.currentTeamId ? teamMap[u.currentTeamId.toString()]?.slug : null,
+      })),
+    };
+  });
 
   // ---- Overview ----
   app.get('/api/admin/overview', guard, async (req, reply) => {
@@ -156,18 +205,37 @@ export default async function adminRoutes(app) {
 
   app.post('/api/admin/players', guard, async (req, reply) => {
     if (!dbReady(app, reply)) return;
-    const { teamId, num, name, role, role_kind, duty = 'support', tier = 3, age = 24, attrs } = req.body || {};
+    let {
+      teamId, num, name, firstName = '', lastName = '',
+      role, secondaryRole = '', role_kind, duty = 'support',
+      tier = 3, age = 24, nationality = '', preferredFoot = 'R',
+      transfermarktUrl = '', attrs,
+    } = req.body || {};
+    // S57: prefer firstName+lastName, derive `name` for engine compatibility.
+    if ((firstName || lastName) && !name) name = `${firstName} ${lastName}`.trim();
     if (!teamId || !num || !name || !role) return reply.code(400).send({ error: 'missing_fields' });
     const team = await Team.findById(teamId).select('worldId').lean();
     if (!team) return reply.code(404).send({ error: 'team_not_found' });
+    // S57: skill → attrs distribution. If client supplies `attrs` we trust it,
+    // otherwise we generate from genPlayer(num, name, role, tier) so the new
+    // player has realistic role-shaped stats instead of an empty {} that the
+    // engine reads as zero.
+    let finalAttrs = attrs;
+    if (!finalAttrs || typeof finalAttrs !== 'object' || Object.keys(finalAttrs).length === 0) {
+      const generated = genPlayer(Number(num), name, role, Math.max(1, Math.min(5, Number(tier))));
+      finalAttrs = generated.attrs;
+    }
     try {
       const p = await Player.create({
         teamId, worldId: team.worldId,
-        num: Number(num), name, role,
+        num: Number(num), name, firstName, lastName,
+        role, secondaryRole,
         role_kind: role_kind || null, duty,
         tier: Math.max(1, Math.min(5, Number(tier))),
         age: Math.max(15, Math.min(45, Number(age))),
-        attrs: attrs && typeof attrs === 'object' ? attrs : { /* defaults will be set on first match if missing */ },
+        nationality, preferredFoot: ['L','R','BOTH'].includes(preferredFoot) ? preferredFoot : 'R',
+        transfermarktUrl,
+        attrs: finalAttrs,
       });
       return reply.code(201).send({ ok: true, player: p });
     } catch (err) {
@@ -177,11 +245,30 @@ export default async function adminRoutes(app) {
 
   app.patch('/api/admin/players/:id', guard, async (req, reply) => {
     if (!dbReady(app, reply)) return;
-    const allowed = ['num', 'name', 'role', 'role_kind', 'duty', 'tier', 'age', 'attrs', 'nationality', 'preferredFoot'];
+    const allowed = ['num', 'name', 'firstName', 'lastName', 'role', 'secondaryRole', 'role_kind', 'duty', 'tier', 'age', 'attrs', 'nationality', 'preferredFoot', 'transfermarktUrl'];
     const patch = {};
     for (const k of allowed) if (k in (req.body || {})) patch[k] = req.body[k];
     if ('tier' in patch) patch.tier = Math.max(1, Math.min(5, Number(patch.tier)));
     if ('age' in patch)  patch.age  = Math.max(15, Math.min(45, Number(patch.age)));
+    // S57: keep combined name in sync when first/last change
+    if ('firstName' in patch || 'lastName' in patch) {
+      const existing = await Player.findById(req.params.id).select('firstName lastName name').lean();
+      const fn = 'firstName' in patch ? patch.firstName : (existing?.firstName || '');
+      const ln = 'lastName' in patch ? patch.lastName : (existing?.lastName || '');
+      if (fn || ln) patch.name = `${fn} ${ln}`.trim();
+    }
+    // S57: regen attrs when tier or role changed without explicit attrs payload —
+    // skill drives the attribute distribution for the new role/tier.
+    if (!('attrs' in patch) && ('tier' in patch || 'role' in patch)) {
+      const existing = await Player.findById(req.params.id).select('num name role tier firstName lastName').lean();
+      if (existing) {
+        const newTier = 'tier' in patch ? patch.tier : existing.tier;
+        const newRole = 'role' in patch ? patch.role : existing.role;
+        const newName = patch.name || existing.name || `${existing.firstName || ''} ${existing.lastName || ''}`.trim() || 'P';
+        const gen = genPlayer(Number(existing.num), newName, newRole, Number(newTier));
+        patch.attrs = gen.attrs;
+      }
+    }
     const p = await Player.findByIdAndUpdate(req.params.id, { $set: patch }, { new: true });
     if (!p) return reply.code(404).send({ error: 'not_found' });
     return { ok: true, player: p };

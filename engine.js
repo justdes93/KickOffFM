@@ -56,6 +56,11 @@ const BALL_FRICTION_AIR = 0.04;    // per second when flying (drag)
 const BALL_CONTROL_RADIUS = 1.0;   // m — closest player within is candidate
 const BALL_CONTROL_VEL_MAX = 8.0;  // m/s — relative velocity threshold for control
 
+// Outfield-player running speed multiplier. Applies to actMoveToTarget vmax
+// and to _computeEta (so first-defender selection stays consistent with real reach).
+// Match clock (10 Hz / 54000 ticks) and all attrs are untouched.
+const PLAYER_SPEED_SCALE = 0.5;
+
 // =========================================================================
 // HELPERS
 // =========================================================================
@@ -190,26 +195,33 @@ const SLOTS_AWAY = SLOTS_HOME.map(s => ({ name: s.name, x: 105 - s.x, y: s.y }))
 function clonePlayer(p) {
   // Sprint 9: discipline derived from decisions + composure (both 50-95 range).
   // Drives leash radius (8-18m): high-discipline players hold position tighter.
-  // Range widened from 6-15 → 8-18 after first benchmark — engine over-disciplined.
   const discipline = ((p.attrs.decisions || 70) + (p.attrs.composure || 70)) / 2;
   const leashRadius = Math.min(18, Math.max(8, 6 + (100 - discipline) / 3));
-  // UI redesign: per-player tally fields for goals / assists (cards via state.yellow).
+  // S64: per-player reaction lag (in ticks @10Hz; 1 tick = 100ms). Anticipation
+  // and concentration shorten the lag — sharp players read play earlier.
+  // Range 1–4 ticks (100–400ms). Also a stable Y position bias so the defensive
+  // line isn't a perfect ruler — gives organic wave look.
+  const anticAttr = (p.attrs?.anticipation ?? p.attrs?.decisions ?? 65);
+  const reactionLagTicks = Math.max(1, Math.round(4 - (anticAttr - 50) / 18));
+  // Hash player num/name for deterministic seedless personal bias (-1.2..+1.2m).
+  const seedStr = `${p.num}|${p.name || ''}`;
+  let h = 0; for (let i = 0; i < seedStr.length; i++) h = ((h << 5) - h + seedStr.charCodeAt(i)) | 0;
+  const posBiasX = ((h & 0xffff) / 65535 - 0.5) * 2.4;
+  const posBiasY = (((h >> 16) & 0xffff) / 65535 - 0.5) * 2.4;
   return {
     ...p,
     attrs: { ...p.attrs },
     state: { fitness: 100, fatigue: 0, morale: 65, yellow: 0, sentOff: false, goals: 0, assists: 0 },
-    // Physics
     x: 52.5, y: 34, vx: 0, vy: 0, facing: 0,
     targetX: 52.5, targetY: 34,
-    // Sprint 9: anchor (ideal tactical position, set by tacticalUpdate) + leash mechanics
     anchor: { x: 52.5, y: 34 },
     discipline,
     leashRadius,
-    recoveryState: null, // null | 'tracking_back'
-    // AI
+    reactionLagTicks,                  // S64
+    posBiasX, posBiasY,                // S64 (stable random offset)
+    recoveryState: null,
     action: 'IDLE',
     actionTimer: 0,
-    // Misc
     hadBallTick: -999,
   };
 }
@@ -239,6 +251,8 @@ export class MatchEngine {
     this.rng = rng || mulberry32(Date.now() & 0xffffffff);
     this.tickCount = 0;
     this.gameTime = 0;            // seconds
+    // S64: ring buffer of recent ball positions for per-player reaction lag.
+    this.ballHistory = new Array(8).fill(null);       // up to 8 ticks back = 800ms
     this.phase = 'pre';           // pre | first | halftime | second | full | shootout
     // S49: per-instance half length override (default 45 min = 2700s; friendly mode 10 min/half = 600s).
     this.halfLenSec = typeof halfLenSec === 'number' && halfLenSec > 0 ? halfLenSec : HALF_LEN_SEC;
@@ -360,7 +374,7 @@ export class MatchEngine {
   // defending team. OG and shootout goals skip review.
   _beginGoalPause(scoredBy, scorer, isOwnGoal) {
     if (!isOwnGoal && this.rng() < 0.08) {
-      this.log({ type: 'system', text: '⏸ VAR check — goal under review...' });
+      this.log({ type: 'system', text: '⏸ VAR — гол на перегляді...' });
       const b = this.ball;
       b.x = 52.5; b.y = 34; b.z = 0;
       b.vx = 0; b.vy = 0; b.vz = 0;
@@ -379,14 +393,14 @@ export class MatchEngine {
         skipDecisions: true,
         onComplete: () => {
           if (this.rng() < 0.93) {
-            this.log({ type: 'system', text: '✅ VAR confirms goal!' });
+            this.log({ type: 'system', text: '✅ VAR підтверджує гол!' });
             this._beginGoalPauseInner(scoredBy, scorer, isOwnGoal);
           } else {
             // Overturn — undo score, scorer tally, goalsList entry.
             this.score[scoredBy] = Math.max(0, this.score[scoredBy] - 1);
             if (scorer && scorer.state) scorer.state.goals = Math.max(0, (scorer.state.goals || 1) - 1);
             if (this.goalsList.length > 0) this.goalsList.pop();
-            this.log({ type: 'system', text: '❌ VAR overturns — goal disallowed.' });
+            this.log({ type: 'system', text: '❌ VAR скасовує — гол не зараховано.' });
             this._beginGoalKick(other(scoredBy));
           }
         },
@@ -399,9 +413,13 @@ export class MatchEngine {
   _beginGoalPauseInner(scoredBy, scorer, isOwnGoal) {
     const conceder = other(scoredBy);
     const b = this.ball;
-    // Move ball off the goal line so checkGoal/inGoal doesn't re-fire while
-    // the celebration runs. Ownership is null so AI doesn't try to play it.
-    b.x = 52.5; b.y = 34; b.z = 0;
+    // Park the ball INSIDE the net so the goal is visually obvious during the
+    // celebration. The ball will be moved to centre at the start of the setup
+    // phase (just before kickoff). Ownership null + velocity 0 prevents the
+    // goal detector from re-firing.
+    const ballGoalX = scoredBy === 'home' ? 107 : -2;
+    const ballGoalY = clamp(b.y, 31, 37);  // keep at scoring lane, inside posts
+    b.x = ballGoalX; b.y = ballGoalY; b.z = 0;
     b.vx = 0; b.vy = 0; b.vz = 0;
     b.ownerSide = null; b.ownerNum = null;
     b.inFlight = false;
@@ -414,43 +432,50 @@ export class MatchEngine {
     const cornerX = scoredBy === 'home' ? 100 : 5;
 
     // Scorer sprints to the corner. Teammates pile up nearby. GK stays.
+    // We override BOTH p.target and p.anchor — executeAction re-derives
+    // targetX from anchor every tick, so target alone gets overwritten.
     for (const p of this.teams[scoredBy].onPitch) {
       if (p.state.sentOff) continue;
       if (p.role === 'GK') {
         p.targetX = p.x; p.targetY = p.y;
+        p.anchor.x = p.x; p.anchor.y = p.y;
         p.action = 'IDLE';
         continue;
       }
+      let tx, ty;
       if (scorer && p.num === scorer.num) {
-        p.targetX = cornerX; p.targetY = cornerY;
+        tx = cornerX; ty = cornerY;
       } else {
         // Cluster around scorer with small jitter
-        p.targetX = cornerX + (this.rng() - 0.5) * 8;
-        p.targetY = cornerY + (this.rng() - 0.5) * 6;
+        tx = cornerX + (this.rng() - 0.5) * 8;
+        ty = cornerY + (this.rng() - 0.5) * 6;
       }
+      p.targetX = tx; p.targetY = ty;
+      p.anchor.x = tx; p.anchor.y = ty;
       p.action = 'MOVE_TO_POSITION';
       p.actionTimer = 0;
     }
 
-    // Conceding team: walk back to own formation slot, head down. Captain-like
-    // figures (CB/GK) lose a tick of morale.
+    // Conceding team: walk back to own formation slot, head down.
     for (const p of this.teams[conceder].onPitch) {
       if (p.state.sentOff) continue;
       const slot = p.slot;
       const baseX = conceder === 'home' ? slot.x * 105 : (1 - slot.x) * 105;
       const baseY = slot.y * 68;
       p.targetX = baseX; p.targetY = baseY;
+      p.anchor.x = baseX; p.anchor.y = baseY;
       p.action = 'MOVE_TO_POSITION';
       p.actionTimer = 0;
-      // S32: morale drops handled centrally in goal-scoring path (no double-decrement).
     }
 
-    // Goal importance gates the celebration length.
+    // Goal importance gates the celebration length. Extended for slow-engine
+    // visibility — at PLAYER_SPEED_SCALE=0.5 + friendly 3× pacing, ~200 ticks
+    // aftermath ≈ 6.7 real-sec of celebration, plenty to see scorer at flag.
     const lateGoal = this.gameTime > 4800; // last ~10 game-min
     const closeGame = Math.abs(this.score.home - this.score.away) <= 1;
     const dramatic = lateGoal && closeGame;
-    const celebrationTicks = isOwnGoal ? 40 : (dramatic ? 200 : 80);
-    const resetTicks = 50;
+    const celebrationTicks = isOwnGoal ? 80 : (dramatic ? 280 : 200);
+    const resetTicks = 200;
 
     this._startPause('goal', [
       { name: 'aftermath', ticks: celebrationTicks },
@@ -461,7 +486,12 @@ export class MatchEngine {
       scorerNum: scorer?.num,
       isOwnGoal,
       onPhaseChange: (phase) => {
-        if (phase === 'setup') this._retargetForKickoff(conceder);
+        if (phase === 'setup') {
+          // Now both teams walk back to their formation positions, and the
+          // ball is moved to centre (out of the net) ready for kickoff.
+          this.ball.x = 52.5; this.ball.y = 34; this.ball.z = 0;
+          this._retargetForKickoff(conceder);
+        }
       },
       onComplete: () => this.setupKickoff(conceder),
     });
@@ -472,7 +502,20 @@ export class MatchEngine {
   // kicks off (other team takes it). Game clock is paused throughout.
   _beginHalftime() {
     this.phase = 'halftime';
-    this.log({ type: 'system', text: `Half time. ${this.score.home}–${this.score.away}.` });
+    this.log({ type: 'system', text: `Перерва. ${this.score.home}–${this.score.away}.` });
+    // S63: stamina recovery during the break. Real players regain ~15% before
+    // 2nd half kickoff; reflects rest + electrolytes.
+    for (const side of ['home', 'away']) {
+      for (const p of this.teams[side].onPitch) {
+        if (p.state.sentOff) continue;
+        p.state.fatigue = Math.max(0, p.state.fatigue * 0.85);
+        p.state.fitness = Math.max(0, 100 - p.state.fatigue);
+      }
+      for (const p of this.teams[side].bench) {
+        p.state.fatigue = Math.max(0, (p.state.fatigue ?? 0) * 0.5);
+        p.state.fitness = Math.max(0, 100 - p.state.fatigue);
+      }
+    }
     // Send everyone to the touchline near halfway (their respective sides) —
     // mirroring the pre-match tunnel direction.
     for (const side of ['home', 'away']) {
@@ -495,8 +538,8 @@ export class MatchEngine {
     this.ball.pendingShot = null;
 
     this._startPause('half_time', [
-      { name: 'aftermath', ticks: 100 },   // walk off
-      { name: 'setup', ticks: 80 },        // walk back to formation
+      { name: 'aftermath', ticks: 350 },   // walk off — extended for slow-speed engine
+      { name: 'setup', ticks: 350 },       // walk back to formation
     ], {
       skipDecisions: true,
       onPhaseChange: (phase) => {
@@ -519,7 +562,7 @@ export class MatchEngine {
         this.phase = 'second';
         this.applyReadyChanges();
         this.setupKickoff('away');
-        this.log({ type: 'kickoff', text: '2nd half — kick off!' });
+        this.log({ type: 'kickoff', text: '2-й тайм — початок!' });
       },
     });
   }
@@ -528,7 +571,7 @@ export class MatchEngine {
   // losers slow walk. Brief pause before phase locks to 'full' so the overlay
   // doesn't snap on instantly.
   _beginFulltime() {
-    this.log({ type: 'system', text: `Full time. ${this.score.home}–${this.score.away}.` });
+    this.log({ type: 'system', text: `Кінець матчу. ${this.score.home}–${this.score.away}.` });
     // Sprint 25a: cup tiebreaker → penalty shootout instead of celebration.
     if (this.isCup && this.score.home === this.score.away) {
       this._beginShootout();
@@ -613,7 +656,7 @@ export class MatchEngine {
     this.ball.pendingPass = null;
     this.ball.pendingShot = null;
 
-    this.log({ type: 'system', text: `${this.teams.home.meta.name} vs ${this.teams.away.meta.name} — teams entering the pitch.` });
+    this.log({ type: 'system', text: `${this.teams.home.meta.name} vs ${this.teams.away.meta.name} — команди виходять на поле.` });
 
     this._startPause('prematch', [
       { name: 'aftermath', ticks: 90 },     // walkout from tunnel → halfway lineup
@@ -643,7 +686,7 @@ export class MatchEngine {
         this.setupKickoff('home');
         this.log({
           type: 'kickoff', side: 'home',
-          text: `Kick-off! ${this.teams.home.meta.name} vs ${this.teams.away.meta.name}.`,
+          text: `Стартовий свисток! ${this.teams.home.meta.name} vs ${this.teams.away.meta.name}.`,
         });
       },
     });
@@ -653,14 +696,18 @@ export class MatchEngine {
   // 'setup' phase of a goal pause so players walk to formation positions rather
   // than teleport at kickoff. The actual snap happens in setupKickoff().
   _retargetForKickoff(forSide) {
+    // Use the SAME compressed kickoff positions as setupKickoff so when the
+    // setup phase ends, no teleport-snap happens — players are already there.
     for (const side of ['home', 'away']) {
       const team = this.teams[side];
       for (const p of team.onPitch) {
         if (p.state.sentOff) continue;
         const slot = p.slot;
-        const baseX = side === 'home' ? slot.x * 105 : (1 - slot.x) * 105;
+        const compressedX = slot.x * 0.4;
+        const baseX = side === 'home' ? compressedX * 105 : (1 - compressedX) * 105;
         const baseY = slot.y * 68;
         p.targetX = baseX; p.targetY = baseY;
+        p.anchor.x = baseX; p.anchor.y = baseY;
         p.action = 'MOVE_TO_POSITION';
       }
     }
@@ -672,7 +719,7 @@ export class MatchEngine {
   // simplified physics path (taker → ball → goal trajectory) gated by a dice
   // roll based on shooter sh / GK reflexes / pressure.
   _beginShootout() {
-    this.log({ type: 'system', text: `Penalty shootout — ${this.teams.home.meta.short} v ${this.teams.away.meta.short}!` });
+    this.log({ type: 'system', text: `Серія пенальті — ${this.teams.home.meta.short} проти ${this.teams.away.meta.short}!` });
     const pickTakers = (side) => this.teams[side].onPitch
       .filter(p => !p.state.sentOff && p.role !== 'GK')
       .sort((a, b) => penaltyRating(b) - penaltyRating(a))
@@ -744,7 +791,7 @@ export class MatchEngine {
     const phaseLabel = so.suddenDeath ? `SD${kickNum - 5}` : `${kickNum}/5`;
     this.log({
       type: 'event', side,
-      text: `${kicker.name} steps up — ${this.teams[side].meta.short} ${phaseLabel} (${so.scoresH}-${so.scoresA})`,
+      text: `${kicker.name} підходить до мʼяча — ${this.teams[side].meta.short} ${phaseLabel} (${so.scoresH}-${so.scoresA})`,
     });
     this._startPause('penalty', [
       { name: 'setup', ticks: 30 },     // approach + GK ready
@@ -803,7 +850,7 @@ export class MatchEngine {
       if (side === 'home') so.scoresH++; else so.scoresA++;
     }
     if (side === 'home') so.kicksH++; else so.kicksA++;
-    const verdict = so.lastResult ? '⚽ Scored' : '🥅 Missed';
+    const verdict = so.lastResult ? '⚽ Гол' : '🥅 Не забив';
     this.log({
       type: 'event', side,
       text: `${verdict}. ${this.teams.home.meta.short} ${so.scoresH}-${so.scoresA} ${this.teams.away.meta.short}`,
@@ -833,7 +880,7 @@ export class MatchEngine {
       if (totalKicks >= 10) {
         if (so.scoresH !== so.scoresA) return true;
         so.suddenDeath = true;
-        this.log({ type: 'system', text: '🚨 Sudden death!' });
+        this.log({ type: 'system', text: '🚨 Несподівана смерть!' });
         return false;
       }
       return false;
@@ -848,7 +895,7 @@ export class MatchEngine {
     const winner = so.scoresH > so.scoresA ? 'home' : 'away';
     this.log({
       type: 'system',
-      text: `🏆 ${this.teams[winner].meta.name} win on penalties (${so.scoresH}-${so.scoresA})!`,
+      text: `🏆 ${this.teams[winner].meta.name} перемагають по пенальті (${so.scoresH}-${so.scoresA})!`,
     });
     so.active = false;
     this.phase = 'full';
@@ -856,9 +903,9 @@ export class MatchEngine {
 
   setupKickoff(forSide) {
     // Bug fix: at kickoff both teams must be on their own half with visible
-    // separation around halfway. Slots compressed × 0.4 so even the most
-    // forward role (ST at slot.x≈0.88 → 0.35) sits well inside own half
-    // (~15m before halfway), giving a ~30m no-man's-land at the centre.
+    // separation around halfway. Players that already walked here during the
+    // pause's setup phase get a soft "nudge" (no hard snap); only those still
+    // far away (e.g. shootout end, debug paths) get teleported into position.
     for (const side of ['home', 'away']) {
       const team = this.teams[side];
       for (const p of team.onPitch) {
@@ -866,10 +913,14 @@ export class MatchEngine {
         const compressedX = slot.x * 0.4;
         const baseX = side === 'home' ? compressedX * 105 : (1 - compressedX) * 105;
         const baseY = slot.y * 68;
-        p.x = baseX; p.y = baseY;
+        const d = Math.hypot(p.x - baseX, p.y - baseY);
+        if (d > 3) {                       // only teleport stragglers
+          p.x = baseX; p.y = baseY;
+        }
         p.vx = 0; p.vy = 0;
         p.facing = side === 'home' ? 0 : Math.PI;
         p.targetX = baseX; p.targetY = baseY;
+        p.anchor.x = baseX; p.anchor.y = baseY;
         p.action = 'IDLE'; p.actionTimer = 0;
       }
     }
@@ -905,11 +956,18 @@ export class MatchEngine {
     const team = this.teams[side];
     const taker = closestPlayer(team.onPitch, x, y);
     if (!taker) return;
-    // Snap taker to the throw-in spot (instant — like in real football, the
-    // closest player picks up the ball quickly).
-    taker.x = x; taker.y = y; taker.vx = 0; taker.vy = 0;
+    // Hybrid snap: if taker is far, snap to within 4m of the throw-in spot,
+    // then let them walk the last bit during the 35-tick setup. Removes the
+    // visible "teleport leap" while keeping the restart on schedule.
+    const _td = dist(taker.x, taker.y, x, y);
+    if (_td > 4) {
+      const _tt = (_td - 4) / _td;
+      taker.x = taker.x + (x - taker.x) * _tt;
+      taker.y = taker.y + (y - taker.y) * _tt;
+    }
+    taker.vx = 0; taker.vy = 0;
     taker.targetX = x; taker.targetY = y;
-    taker.action = 'IDLE'; taker.actionTimer = 0;
+    taker.action = 'MOVE_TO_POSITION'; taker.actionTimer = 0;
     // Ball at spot, no owner — AI ignores it during pause.
     this.ball.x = x; this.ball.y = y; this.ball.z = 0;
     this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0;
@@ -941,6 +999,15 @@ export class MatchEngine {
         this.ball.ownerNum = taker.num;
         this.ball.lastTouchSide = side;
         this.ball.lastTouchNum = taker.num;
+        // Force a safe short pass to the back receiver — mirrors a real
+        // hand-throw to the nearest teammate. Without this the taker's
+        // normal AI sometimes picks a longer forward option that an
+        // opponent intercepts.
+        if (teammates[0]) {
+          taker.action = 'PASS';
+          taker.actionTimer = 3;
+          taker._passTargetNum = teammates[0].num;
+        }
       },
     });
   }
@@ -953,9 +1020,17 @@ export class MatchEngine {
     const gk = team.onPitch.find(p => p.role === 'GK' && !p.state.sentOff);
     if (!gk) return;
     const ballX = side === 'home' ? 5 : 100;
-    gk.x = ballX; gk.y = 34; gk.vx = 0; gk.vy = 0;
+    // Hybrid snap: if GK rushed far from goal, snap to within 4m then walk
+    // the rest during the 80-tick setup. No visible teleport leap.
+    const _gd = dist(gk.x, gk.y, ballX, 34);
+    if (_gd > 4) {
+      const _gt = (_gd - 4) / _gd;
+      gk.x = gk.x + (ballX - gk.x) * _gt;
+      gk.y = gk.y + (34 - gk.y) * _gt;
+    }
+    gk.vx = 0; gk.vy = 0;
     gk.targetX = ballX; gk.targetY = 34;
-    gk.action = 'IDLE'; gk.actionTimer = 0;
+    gk.action = 'MOVE_TO_POSITION'; gk.actionTimer = 0;
     this.ball.x = ballX; this.ball.y = 34; this.ball.z = 0;
     this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0;
     this.ball.ownerSide = null; this.ball.ownerNum = null;
@@ -1043,7 +1118,12 @@ export class MatchEngine {
       for (const side of ['home', 'away']) {
         for (const p of this.teams[side].onPitch) {
           if (p.state.sentOff) continue;
-          if (p.action === 'MOVE_TO_POSITION' || p.action === 'IDLE') this.actMoveToTarget(p, false);
+          // Jog mode during halftime so players actually reach the tunnel/back
+          // even with low PLAYER_SPEED_SCALE. Shootout uses idle pacing.
+          if (p.action === 'MOVE_TO_POSITION' || p.action === 'IDLE') {
+            const sprint = this.phase === 'halftime';
+            this.actMoveToTarget(p, sprint);
+          }
           this._applyPauseSpeedCap(p);
           this.integratePlayer(p);
         }
@@ -1073,6 +1153,8 @@ export class MatchEngine {
 
     this.gameTime += DT;
     this.tickCount++;
+    // S64: snapshot ball position into rolling history for per-player lag sampling.
+    this.ballHistory[this.tickCount % this.ballHistory.length] = { x: this.ball.x, y: this.ball.y };
 
     // Set piece in progress — scripted positioning + delivery overrides normal AI.
     if (this.setPiece) {
@@ -1105,8 +1187,12 @@ export class MatchEngine {
     // 1. Strategic — pending tactical changes
     this.applyReadyChanges();
 
-    // 2. Tactical — phase + targets, every 30 ticks
-    if (this.tickCount % 30 === 0) {
+    // 2. Tactical — phase + targets, every 30 ticks. Skipped during goal
+    //    celebration pauses so the scripted choreography (scorer to corner,
+    //    teammates pile up, conceders walk back) isn't overwritten by the
+    //    formation-targets-from-anchor logic.
+    const lockTargets = this.pause?.active && (this.pause.type === 'goal' || this.pause.type === 'var_check');
+    if (this.tickCount % 30 === 0 && !lockTargets) {
       for (const side of ['home', 'away']) this.tacticalUpdate(side);
     }
 
@@ -1310,19 +1396,36 @@ export class MatchEngine {
         this.teamState[side].pressTrigger = { type: 'counter_press', remaining: 50 };
       } else if (phase === 'transAtk') {
         // Just won the ball — fire forward runs to exploit the open space.
-        // S27: shadow_striker / mezzala / wing_back / box_to_box also fire runs
-        // when their `run` bias > 0; ST/W run regardless (default attackers).
-        // S28: tempo modulates run cadence — fast tempo shortens cooldown so runs chain.
+        // S70: real counter-attacks have role diversity — 1-2 deep runners
+        // sprint into space, the rest support / trail. Previously ALL
+        // attackers ran in sync → homogeneous reaction. Now pick the 1-2
+        // best-positioned candidates (closest to opp goal, highest pace) and
+        // only they get _runActive. Others stay supportive.
         const tempoMul = team.tactics?.tempo === 'fast' ? 0.7 : team.tactics?.tempo === 'slow' ? 1.3 : 1.0;
-        for (const p of team.onPitch) {
-          if (p.state.sentOff) continue;
+        const candidates = team.onPitch
+          .filter(p => {
+            if (p.state.sentOff) return false;
+            const isAttacker = p.role === 'ST' || p.role === 'W';
+            return isAttacker || _roleBias(p, 'run') > 0;
+          })
+          .filter(p => (p._runCooldown || 0) <= 0)
+          // S72: anti-offside gate — don't trigger runs for attackers already
+          // beyond the offside line, or within 1m of it. Previously the engine
+          // happily fired runners straight into offside positions, ballooning
+          // the offsides count to 14+/match (real ~2).
+          .filter(p => !this.isOffside(p.side, p))
+          .map(p => {
+            const goalX = side === 'home' ? 105 : 0;
+            const dToOppGoal = Math.abs(goalX - p.x);
+            const paceRating = (p.attrs?.pace ?? 65);
+            return { p, score: paceRating - dToOppGoal * 0.6 + _roleBias(p, 'run') * 30 };
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 2);
+        for (const { p } of candidates) {
           const runBias = _roleBias(p, 'run');
-          const isAttacker = p.role === 'ST' || p.role === 'W';
-          if (!isAttacker && runBias <= 0) continue;
-          if ((p._runCooldown || 0) <= 0) {
-            p._runActive = 30 + Math.round(runBias * 60);
-            p._runCooldown = Math.round(80 * tempoMul);
-          }
+          p._runActive = 30 + Math.round(runBias * 60);
+          p._runCooldown = Math.round(80 * tempoMul);
         }
       }
     }
@@ -1365,17 +1468,89 @@ export class MatchEngine {
       p.targetX = side === 'home' ? normX * 105 : (1 - normX) * 105;
       p.targetY = normY * 68;
 
-      // Ball-side compression in defending phase
+      // S64: per-player position bias for organic line shape. Defenders no
+      // longer step in perfect unison — small stable offsets break up the
+      // "single body" silhouette without changing tactical correctness.
+      const biasMul = (p.role === 'GK') ? 0.0 : (p.role === 'CB' || p.role === 'FB') ? 0.7 : 1.0;
+      p.targetX += (p.posBiasX || 0) * biasMul;
+      p.targetY += (p.posBiasY || 0) * biasMul;
+
+      // Ball-side compression in defending phase — now uses each player's
+      // *perceived* ball (lagged) and a role-varying pull coefficient.
       if (phase === 'def' || phase === 'transDef') {
-        const ballPullY = (ball.y - p.targetY) * 0.25;
+        const pb = this._perceivedBall(p);
+        const pullCoef = p.role === 'GK' ? 0.10
+                       : p.role === 'CB' ? 0.22
+                       : p.role === 'FB' ? 0.32
+                       : p.role === 'DM' ? 0.26
+                       : 0.20;
+        const ballPullY = (pb.y - p.targetY) * pullCoef;
         p.targetY = clamp(p.targetY + ballPullY, 4, 64);
+        // S69: vertical line dynamics. Subtle step-up/drop based on ball X.
+        // Was static — defLineMod only adjusted base depth. Now line breathes
+        // with the ball but coefficients are conservative to avoid corners
+        // explosion (S69 v1 made line too high → clearances out for corners).
+        if (p.role === 'CB' || p.role === 'FB' || p.role === 'DM') {
+          const ourHalfX = side === 'home' ? 0 : 105;
+          const ballDistFromOurGoal = Math.abs(ourHalfX - pb.x);
+          // ±3m at extremes (ball at far end vs at goal mouth).
+          const stepUp = (ballDistFromOurGoal - 52.5) * 0.06;
+          const xPullCoef = p.role === 'CB' ? 0.30 : p.role === 'FB' ? 0.25 : 0.15;
+          const adjust = stepUp * xPullCoef * (side === 'home' ? 1 : -1);
+          p.targetX = clamp(p.targetX + adjust, 8, 97);
+        }
       }
 
       // Sprint 9: snapshot the tactical position as the player's anchor.
-      // anchor stays stable for the next 30 ticks (until next tacticalUpdate),
-      // while targetX/Y can be mutated by per-tick decisions (PRESS, INTERCEPT, etc).
       p.anchor.x = p.targetX;
       p.anchor.y = p.targetY;
+    }
+
+    // S66: cover pass lanes. When defending in our own half, two nearest
+    // defensive players shade toward the most dangerous receivers (Y-only so
+    // the defensive line depth stays cohesive). Keeps formation shape, just
+    // shifts marker laterally — no longer "one presser + 10 statues".
+    const isDefending = ball.ownerSide === other(side);
+    if (isDefending) {
+      const carrier = opp.onPitch.find(o => o.num === ball.ownerNum && !o.state.sentOff);
+      const ownGoalX = side === 'home' ? 0 : 105;
+      const carrierThreat = carrier ? Math.abs(ownGoalX - carrier.x) < 55 : false;
+      if (carrier && carrierThreat) {
+        const dangerous = opp.onPitch
+          .filter(o => !o.state.sentOff && o.role !== 'GK' && o.num !== carrier.num)
+          .map(o => {
+            const dToGoal = Math.abs(ownGoalX - o.x);
+            const dToCarrier = dist(o.x, o.y, carrier.x, carrier.y);
+            const passReach = Math.max(0, 1 - dToCarrier / 35);
+            const goalThreat = Math.max(0, 1 - dToGoal / 50);
+            return { o, score: goalThreat * 0.6 + passReach * 0.4 };
+          })
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 2);
+
+        const firstId = this.teamState?.[side]?.firstDefenderId;
+        const assigned = new Set();
+        if (firstId != null) assigned.add(firstId);
+        for (const p of team.onPitch) p._coveringOpp = null;
+        for (const { o: receiver } of dangerous) {
+          let best = null, bestD = Infinity;
+          for (const p of team.onPitch) {
+            if (p.state.sentOff) continue;
+            if (!['CB', 'FB', 'DM', 'CM'].includes(p.role)) continue;
+            if (assigned.has(p.num)) continue;
+            const d = Math.abs(p.anchor.y - receiver.y);    // Y-distance: stay on same lane
+            if (d < bestD) { bestD = d; best = p; }
+          }
+          if (!best) break;
+          assigned.add(best.num);
+          best._coveringOpp = receiver.num;
+          // Y-only soft shade: keep line X depth (don't break shape), just
+          // slide toward receiver's lane.
+          best.anchor.y = best.anchor.y * 0.70 + receiver.y * 0.30;
+        }
+      } else {
+        for (const p of team.onPitch) p._coveringOpp = null;
+      }
     }
   }
 
@@ -1497,7 +1672,6 @@ export class MatchEngine {
 
     // Through-ball / sweeper — ball loose and ahead of defenders, GK comes out
     if (!ball.ownerSide && ball.x > 8 && ball.x < 97) {
-      const opp = this.teams[other(p.side)];
       const ballAhead = p.side === 'home' ? ball.x < 30 : ball.x > 75;
       if (ballAhead) {
         // Run out (limited to penalty area)
@@ -1509,10 +1683,42 @@ export class MatchEngine {
       }
     }
 
+    // S71: sweeper-keeper deployment. When our team is attacking deep in the
+    // opp half + defLine='high', GK steps out to the edge of the box / D so
+    // they can read long balls early and start build-up. Was static on line —
+    // now matches modern football's high-line philosophy.
+    const ownTeamAttacking = ball.ownerSide === p.side;
+    const ballDeepInOppHalf = p.side === 'home' ? ball.x > 75 : ball.x < 30;
+    const highLine = team.tactics?.defLine === 'high';
+    if (ownTeamAttacking && ballDeepInOppHalf && highLine) {
+      const sweeperX = p.side === 'home' ? 18 : 87;
+      p.targetX = sweeperX;
+      p.targetY = clamp(34 + (ball.y - 34) * 0.10, 30, 38);
+      p.action = 'MOVE_TO_POSITION';
+      return;
+    }
+
+    // S71: claim-area for aerial balls. If ball is in flight overhead in our
+    // box AND no defender / attacker has clear advantage, GK comes off the
+    // line to collect. Increases command-of-area count.
+    const inOurBox = p.side === 'home' ? ball.x < 16.5 : ball.x > 88.5;
+    const ballInAir = ball.z > 1.0;
+    const ballSlowEnough = Math.hypot(ball.vx, ball.vy) < 14;
+    if (!ball.ownerSide && inOurBox && ballInAir && ballSlowEnough) {
+      const cmdR = (p.attrs?.command_of_area ?? p.attrs?.handling ?? 65);
+      if (cmdR > 60) {                                  // confident keepers only
+        const limitX = p.side === 'home' ? 10 : 95;
+        p.targetX = (p.side === 'home') ? Math.min(ball.x, limitX) : Math.max(ball.x, limitX);
+        p.targetY = clamp(ball.y, 28, 40);
+        p.action = 'MOVE_TO_POSITION';
+        return;
+      }
+    }
+
     // Default: stand on goal line, slightly off-centre toward ball Y
     const baseX = p.side === 'home' ? (team.tactics.defLine === 'high' ? 8 : 4) : (team.tactics.defLine === 'high' ? 97 : 101);
     p.targetX = baseX;
-    p.targetY = 30 + (ball.y - 30) * 0.18 + 3;  // slight bias to ball
+    p.targetY = 30 + (ball.y - 30) * 0.18 + 3;
     p.targetY = clamp(p.targetY, 28, 40);
     p.action = 'MOVE_TO_POSITION';
   }
@@ -1525,8 +1731,10 @@ export class MatchEngine {
     if ((p.role === 'ST' || p.role === 'W')) {
       const teamPhase = team.currentPhase;
       if (teamPhase === 'final' || teamPhase === 'progress') {
-        // Decide whether to start a run
-        if (!p._runActive && this.rng() < 0.04) {
+        // S72: only start a new run if we're currently onside. Was unguarded
+        // so the engine sprang runs straight into offside positions, ballooning
+        // offside count to 14+/match (real ~2).
+        if (!p._runActive && this.rng() < 0.04 && !this.isOffside(p.side, p)) {
           p._runActive = 24 + Math.floor(this.rng() * 16);  // ticks of run
         }
       } else {
@@ -1539,10 +1747,14 @@ export class MatchEngine {
       let lineX;
       if (p.side === 'home') lineX = Math.max(...opp.onPitch.filter(o => o.role !== 'GK' && !o.state.sentOff).map(o => o.x));
       else lineX = Math.min(...opp.onPitch.filter(o => o.role !== 'GK' && !o.state.sentOff).map(o => o.x));
-      // 2m onside, with lateral jitter for variety
-      p.targetX = lineX - 2 * dir;
+      // S72: target sits 4m ONSIDE of the offside line so a step-up by the
+      // defenders doesn't immediately leave the runner offside. Previous 2m
+      // buffer kept ~14 offsides/match (real ~2). Generates more sustained
+      // chances since runners stay in legal positions longer.
+      p.targetX = lineX - 4 * dir;
       p.targetY = clamp(p.slot.y * 68 + (this.rng() - 0.5) * 8, 5, 63);
-      p._runActive--;
+      if (this.isOffside(p.side, p)) p._runActive = 0;
+      else p._runActive--;
     }
     p.action = 'MOVE_TO_POSITION';
   }
@@ -1580,7 +1792,9 @@ export class MatchEngine {
       }
     }
     const inDangerZone = distGoal < 16;
-    const minScore = (best.kind === 'SHOOT' ? (inDangerZone ? 0.02 : 0.05) : 0.15) + twHoldBoost;
+    // Outside-box shots require a higher utility score so the AI doesn't
+    // waste possession with 30m hopeful shots that fly out for a goal kick.
+    const minScore = (best.kind === 'SHOOT' ? (inDangerZone ? 0.02 : 0.15) : 0.15) + twHoldBoost;
     if (best.score < minScore) {
       p.action = 'HOLD';
       p.actionTimer = 5;
@@ -1794,7 +2008,11 @@ export class MatchEngine {
     const lsF = team.tactics?.longShotFreq;
     const lsMul = lsF === 'often' ? 2.4 : lsF === 'rare' ? 0.4 : 1.0;
     const longRangeBias = longRange ? Math.max(0, (longShotR - 60) * 0.010 * lsMul) : 0;
-    let score = xG * 1.4 + boxBonus + longRangeBias - press * pressMul;
+    // S72: shoot-vs-pass scoring. S64 dropped to 1.0 which over-corrected →
+    // engine took 6.5 shots/team vs real ~13. Bumped to 1.5 + raised box bonus
+    // to bring shot frequency closer to real-football. Goals stay realistic via
+    // S64 wide-miss gate + accuracy noise.
+    let score = xG * 1.5 + boxBonus + longRangeBias - press * pressMul;
     // S27: role bias — poacher / advanced_forward / shadow_striker shoot more often.
     score *= 1 + _roleBias(p, 'shoot');
     // S27: in_box bonus for poacher-style roles when inside the area.
@@ -1846,7 +2064,20 @@ export class MatchEngine {
       const passSet = team.tactics?.passing;
       const passT = (passSet === 'long' || passSet === 'direct') ? 28 : passSet === 'short' ? 18 : 22;
       const progMul = passSet === 'direct' ? 1.6 : passSet === 'short' ? 0.6 : 1.0;
-      const score = (1 + Math.max(0, progress) * 0.05 * progMul)
+      // S68: pass-to-runner anticipation. Teammate making a timed run (set by
+      // decideSupport/transAtk) gets a big bonus on the carrier's pass scorer,
+      // so the on-ball player actually finds the runner instead of choosing a
+      // safer sideways option. Bonus is amplified when the runner is making
+      // forward progress relative to the carrier (real "in behind" pass).
+      let runBonus = 0;
+      if ((m._runActive || 0) > 0) {
+        const forward = progress > 4;
+        runBonus = forward ? 0.8 : 0.35;
+      }
+      // S72: base 1 → 0.75 — pass utility was structurally too high, pushing
+      // shoot below pass even for clean shooting chances.
+      const score = (0.75 + Math.max(0, progress) * 0.05 * progMul)
+        + runBonus
         - markPenalty * 0.5
         - lanePenalty
         - (distToM > passT ? (distToM - passT) * 0.04 : 0);
@@ -1860,7 +2091,7 @@ export class MatchEngine {
   // Sprint 8: ETA from player to ball, factoring carrier motion, facing, and stamina.
   // Used by team-state to pick the single first-defender per team. Lower ETA = better candidate.
   _computeEta(p, ball, carrier) {
-    const playerSpeed = 7 + speedRating(p) * 0.05; // ~10.5 m/s top  (S26 fix: was attrs.pa typo)
+    const playerSpeed = (7 + speedRating(p) * 0.05) * PLAYER_SPEED_SCALE; // ~10.5 m/s top × scale
     const dxy = dist(p.x, p.y, ball.x, ball.y);
     let eta = dxy / playerSpeed;
     if (carrier) {
@@ -1985,7 +2216,9 @@ export class MatchEngine {
   }
 
   willReachBallFirst(p, side) {
-    // Approximate: predict ball stop position vs player ETA
+    // Approximate: predict ball stop position vs player ETA. Player must beat
+    // BOTH the best opponent AND the best teammate — otherwise the team
+    // commits 5-6 players to the same loose ball and ends up swarming.
     const ball = this.ball;
     const myEta = dist(p.x, p.y, ball.x, ball.y) / Math.max(2, speedRating(p) / 12);
     const opp = this.teams[other(side)];
@@ -1995,7 +2228,14 @@ export class MatchEngine {
       const e = dist(o.x, o.y, ball.x, ball.y) / Math.max(2, speedRating(o) / 12);
       if (e < oppEta) oppEta = e;
     }
-    return myEta < oppEta;
+    const mine = this.teams[side];
+    let bestMyEta = myEta;
+    for (const m of mine.onPitch) {
+      if (m.state.sentOff || m.num === p.num) continue;
+      const e = dist(m.x, m.y, ball.x, ball.y) / Math.max(2, speedRating(m) / 12);
+      if (e < bestMyEta) bestMyEta = e;
+    }
+    return myEta < oppEta && myEta <= bestMyEta;
   }
 
   // ----------------------------------------------------------------------
@@ -2007,20 +2247,17 @@ export class MatchEngine {
 
     switch (p.action) {
       case 'MOVE_TO_POSITION': {
-        // Sprint 9: anchor leash. If the player isn't on an active off-ball run,
-        // snap the immediate target back to anchor and check the leash:
-        //   * outside leash → enter recovery, sprint back
-        //   * inside leash → walk normally, clear recovery once close to anchor
-        // This keeps non-ball-chasing players bound to their tactical zone instead
-        // of drifting toward the ball whenever idle.
         const onActiveRun = (p._runActive || 0) > 0;
         if (!onActiveRun) {
-          p.targetX = p.anchor.x;
-          p.targetY = p.anchor.y;
+          // S67: scan micro-movement. When idle at anchor, add a tiny oscillation
+          // to the target so players visibly fidget / scan / sidestep instead of
+          // freezing like statues. Period varies per player so they don't sync.
+          const phase = (this.tickCount + (p.num || 0) * 7) / 22;
+          const jx = Math.sin(phase) * 0.7;
+          const jy = Math.cos(phase * 1.3 + (p.num || 0) * 0.3) * 0.6;
+          p.targetX = p.anchor.x + jx;
+          p.targetY = p.anchor.y + jy;
           const distFromAnchor = Math.hypot(p.x - p.anchor.x, p.y - p.anchor.y);
-          // Sprint 16 (Lever 2): leash 2× for attackers (ST/W/AM) in attacking
-          // phases. Lets forwards drift creatively into space without immediate
-          // recovery sprint — generates open-play attacking moments.
           const myTeam = this.teams[p.side];
           const inAtkPhase = myTeam.currentPhase === 'final' || myTeam.currentPhase === 'progress';
           const isAttacker = p.role === 'ST' || p.role === 'W' || p.role === 'AM';
@@ -2069,8 +2306,10 @@ export class MatchEngine {
         this.actClear(p);
         break;
       case 'HOLD':
-        // Stand still, decelerate
-        p.vx *= 0.7; p.vy *= 0.7;
+        // Light deceleration during settle — keeps a bit of forward momentum
+        // so reception doesn't look like a dead stop. decideAction picks the
+        // next move on the next cycle (~4 ticks).
+        p.vx *= 0.88; p.vy *= 0.88;
         if (p.actionTimer <= 0) p.action = 'IDLE';
         break;
       case 'IDLE':
@@ -2091,7 +2330,7 @@ export class MatchEngine {
     }
     // Max speed from attrs
     const fitnessMod = 0.7 + 0.3 * (p.state.fitness / 100);
-    const baseSpeed = (3 + speedRating(p) * 0.07) * fitnessMod;  // m/s, ~3-9.5
+    const baseSpeed = (3 + speedRating(p) * 0.07) * fitnessMod * PLAYER_SPEED_SCALE;  // m/s, ~3-9.5 × scale
     const vmax = sprint ? baseSpeed : baseSpeed * 0.78;
     const accel = 12;  // m/s²
     // Desired velocity
@@ -2123,11 +2362,48 @@ export class MatchEngine {
       const sR = shootRating(p, distGoal);
       const power = 22 + (sR - 70) * 0.18 + (this.rng() - 0.5) * 4;
       // Sprint 15: angular accuracy noise — replaces previous additive-Y model.
-      // Angular deviation scales inversely with shooting rating (elite shooters more accurate).
       // S32: fitness widens shot noise — tired players miss more.
-      const baseAngular = (1.0 - sR / 100) * 1.2 / _fitMul(p);
+      // S64: explicit wide-miss gate.
+      // S72: + pressure-based miss (defender close to shooter) and composure/
+      // fitness-based noise amplification. Real shooters under pressure miss
+      // the frame far more often than clean-look shooters.
+      let minOppDist = 99;
+      const oppTeam = this.teams[other(p.side)];
+      for (const o of oppTeam.onPitch) {
+        if (o.state.sentOff) continue;
+        const d = dist(p.x, p.y, o.x, o.y);
+        if (d < minOppDist) minOppDist = d;
+      }
+      const pressure = Math.max(0, 1 - minOppDist / 3.5);       // 0..1, 1 = opp right on shooter
+      const compR = (p.attrs?.composure ?? 65);
+      const composureFactor = (75 - compR) / 100;               // negative for elite (>75), positive for poor
+      // Distance gate — close-range shots should be FAR more accurate. A
+      // striker 8m out shouldn't blast 15m wide of an open goal. Scales the
+      // wide-miss probability and the wide-miss magnitude down for close shots.
+      // Distance gate — close shots more accurate than long shots, but not
+      // free goals: floor at 0.45 so 6-yard chances still have ~25-30% miss
+      // rate (matching real-football conversion).
+      const distFactor = clamp((distGoal - 4) / 22, 0.45, 1.0);
+      const wideMissProb = Math.min(0.85 * distFactor,
+        (0.18 +
+        Math.max(0, distGoal - 8) * 0.022 +
+        (90 - sR) * 0.005 +
+        pressure * 0.30 +
+        Math.max(0, composureFactor) * 0.5
+        ) * distFactor
+      );
+      let aimAdjY = 0;
+      if (this.rng() < wideMissProb) {
+        const wideSide = this.rng() < 0.5 ? -1 : 1;
+        const mag = (4 + this.rng() * 10) * distFactor + 2;
+        aimAdjY = wideSide * mag;
+      }
+      const adjAimY = aimY + aimAdjY;
+      const adx = goalX - p.x, ady = adjAimY - p.y;
+      const composureMul = clamp(1 + (75 - compR) / 80, 0.8, 1.6);
+      const baseAngular = (1.0 - sR / 100) * 1.4 * composureMul / _fitMul(p) * distFactor;
       const noiseAngle = (this.rng() - 0.5) * baseAngular;
-      const aimAngle = Math.atan2(dy, dx) + noiseAngle;
+      const aimAngle = Math.atan2(ady, adx) + noiseAngle;
       const noiseZ = (this.rng() - 0.5) * 0.5;
       // Set ball velocity using perturbed angle
       this.ball.vx = Math.cos(aimAngle) * power;
@@ -2157,7 +2433,7 @@ export class MatchEngine {
       this._detectChanceCreatedAndKeyPass(this.ball.pendingShot);
       this.log({
         type: 'shot', side: p.side,
-        text: `${p.name} (${this.teams[p.side].meta.short}) shoots from ${distGoal.toFixed(0)}m. xG ${xGEst.toFixed(2)}.`,
+        text: `${p.name} (${this.teams[p.side].meta.short}) бʼє з ${distGoal.toFixed(0)}м. xG ${xGEst.toFixed(2)}.`,
       });
       p.action = 'IDLE';
     }
@@ -2170,7 +2446,7 @@ export class MatchEngine {
     if (ps.xG >= 0.30) {
       this.log({
         type: 'spectacular', side: ps.fromSide, kind: 'BIG_CHANCE_CREATED',
-        text: `🎯 BIG CHANCE — ${ps.shooterName} clean opening. xG ${ps.xG.toFixed(2)}.`,
+        text: `🎯 ВЕЛИКИЙ ШАНС — ${ps.shooterName} вийшов чисто. xG ${ps.xG.toFixed(2)}.`,
       });
     }
     if (this.lastReceivedPass && this.lastReceivedPass.receiverNum === ps.fromNum
@@ -2179,7 +2455,7 @@ export class MatchEngine {
       const lp = this.lastReceivedPass;
       this.log({
         type: 'spectacular', side: ps.fromSide, kind: 'KEY_PASS',
-        text: `🔑 Key pass by ${lp.passerName} → ${lp.receiverName}'s shot.`,
+        text: `🔑 Ключова передача ${lp.passerName} → удар ${lp.receiverName}.`,
       });
     }
   }
@@ -2221,7 +2497,7 @@ export class MatchEngine {
         kickTick: this.tickCount, type: 'cross',
       };
       this.stats[p.side].passes++;
-      this.log({ type: 'event', side: p.side, text: `${p.name} swings in a cross.` });
+      this.log({ type: 'event', side: p.side, text: `${p.name} навішує у штрафний.` });
       p.action = 'IDLE';
     }
   }
@@ -2256,7 +2532,7 @@ export class MatchEngine {
         kickTick: this.tickCount, type: 'through', offside,
       };
       this.stats[p.side].passes++;
-      this.log({ type: 'event', side: p.side, text: `${p.name} slides a through ball to ${target.name}.` });
+      this.log({ type: 'event', side: p.side, text: `${p.name} віддає розрізну на ${target.name}.` });
       p.action = 'IDLE';
     }
   }
@@ -2280,9 +2556,21 @@ export class MatchEngine {
       this.ball.inFlight = true;
       this.ball.pendingShot = null;
       this.ball.pendingPass = null;
-      this.log({ type: 'event', side: p.side, text: `${p.name} hoofs it clear.` });
+      this.log({ type: 'event', side: p.side, text: `${p.name} вибиває мʼяч геть.` });
       p.action = 'IDLE';
     }
+  }
+
+  // S64: ball as perceived by a player — sampled from history N ticks ago,
+  // where N is the player's reactionLagTicks. Means individual defenders react
+  // to ball movement at slightly different times → defensive line breaks the
+  // "single body" sync that bothered users.
+  _perceivedBall(p) {
+    const lag = p.reactionLagTicks || 1;
+    const buf = this.ballHistory;
+    const idx = ((this.tickCount - lag) % buf.length + buf.length) % buf.length;
+    const sample = buf[idx];
+    return sample || { x: this.ball.x, y: this.ball.y };
   }
 
   // Per-spec perception model: vision range + distance-scaled position noise.
@@ -2378,7 +2666,7 @@ export class MatchEngine {
       ball.ownerSide = null; ball.ownerNum = null;
       ball.lastTouchSide = p.side; ball.lastTouchNum = p.num;
       this.stats[p.side].tackles++;
-      this.log({ type: 'event', side: p.side, text: `${p.name} dispossesses ${carrier.name}.` });
+      this.log({ type: 'event', side: p.side, text: `${p.name} відбирає мʼяч у ${carrier.name}.` });
       // Capture how long the opponent had been in possession BEFORE we reset the marker.
       const oppPossessionTicks = this.tickCount - this.lastPossessionChange;
       this.lastPossessionChange = this.tickCount;
@@ -2394,7 +2682,7 @@ export class MatchEngine {
         this.lastBigTackleTick[p.side] = this.tickCount;
         this.log({
           type: 'spectacular', side: p.side, kind: 'BIG_TACKLE',
-          text: `🛡️ Big tackle — ${p.name} stops a dangerous attack.`,
+          text: `🛡️ Потужний відбір — ${p.name} зупиняє небезпечну атаку.`,
         });
       }
     } else {
@@ -2450,7 +2738,7 @@ export class MatchEngine {
       this.stats[p.side].passes++;
       this.log({
         type: 'event', side: p.side,
-        text: `${p.name} → ${target.name}.`,
+        text: `${p.name} → пас на ${target.name}.`,
       });
       p.action = 'IDLE';
     }
@@ -2562,7 +2850,7 @@ export class MatchEngine {
           const cornerSide = other(best.side);
           const cornerY = best.y < 34 ? 0.5 : 67.5;
           const cornerX = best.side === 'home' ? 0.5 : 104.5;
-          this.log({ type: 'event', side: best.side, text: `${best.name} deflects out for a corner.` });
+          this.log({ type: 'event', side: best.side, text: `${best.name} переводить мʼяч на кутовий.` });
           this.awardCornerSetPiece(cornerSide, cornerX, cornerY);
           return;
         }
@@ -2581,13 +2869,16 @@ export class MatchEngine {
     // Resolve pending pass / shot semantics
     if (b.pendingShot) {
       const ps = b.pendingShot;
-      // Save by GK on shooter's opp team?
+      // S64: don't count GK-collects-loose-ball as on-target. "On target" only
+      // increments via the checkBoundaries path when ball actually crosses
+      // goal line within the mouth (saves, woodwork, goals).
       if (best.role === 'GK' && best.side !== ps.fromSide) {
-        this.stats[ps.fromSide].onTarget++;
-        this.log({ type: 'shot', side: ps.fromSide, text: `🥅 ${best.name} saves from ${this.teams[ps.fromSide].meta.short}'s shot. xG ${ps.xG.toFixed(2)}.` });
+        this.log({
+          type: 'shot', side: ps.fromSide,
+          text: `🥅 ${best.name} ловить удар ${this.teams[ps.fromSide].meta.short}. xG ${ps.xG.toFixed(2)}.`,
+        });
       } else if (best.side === ps.fromSide) {
-        // Rebound to attacker
-        this.log({ type: 'shot', side: ps.fromSide, text: `${best.name} reaches the rebound.` });
+        this.log({ type: 'shot', side: ps.fromSide, text: `${best.name} підбирає відскік.` });
       }
       b.pendingShot = null;
     }
@@ -2597,7 +2888,7 @@ export class MatchEngine {
       // Offside check — flag goes up when intended receiver controls the ball
       if (pp.offside && toSide === pp.fromSide && best.num === pp.targetNum) {
         this.stats[pp.fromSide].offsides++;
-        this.log({ type: 'event', side: other(pp.fromSide), text: `🚩 Offside! ${best.name} caught past the last defender.` });
+        this.log({ type: 'event', side: other(pp.fromSide), text: `🚩 Офсайд! ${best.name} опинився за лінією захисту.` });
         // Sprint 21: 25-tick whistle freeze before play resumes — gives the
         // visual moment of "flag up, attacker raises hands". skipDecisions
         // suspends AI so players don't immediately start chasing the ball.
@@ -2645,24 +2936,24 @@ export class MatchEngine {
           if (inBox && pp.type === 'through') {
             this.log({
               type: 'spectacular', side: pp.fromSide, kind: 'THROUGH_BALL_INTO_BOX',
-              text: `🎯 Through ball threaded — ${best.name} in the box.`,
+              text: `🎯 Розрізна передача — ${best.name} у штрафному.`,
             });
           }
         }
         if (best.num !== pp.targetNum) {
-          this.log({ type: 'event', side: pp.fromSide, text: `${best.name} collects.` });
+          this.log({ type: 'event', side: pp.fromSide, text: `${best.name} приймає мʼяч.` });
         }
       } else {
         // Interception by opponent (separate from physical tackles).
         this.stats[toSide].interceptions++;
-        this.log({ type: 'event', side: toSide, text: `${best.name} intercepts.` });
+        this.log({ type: 'event', side: toSide, text: `${best.name} перехоплює.` });
       }
       b.pendingPass = null;
     } else if (wasOpponentBall) {
       // Loose-ball recovery — log but don't count as tackle (real "tackles" stat
       // is reserved for clean slide-tackles + interceptions of attempted passes).
       this.lastPossessionChange = this.tickCount;
-      this.log({ type: 'event', side: toSide, text: `${best.name} wins possession.` });
+      this.log({ type: 'event', side: toSide, text: `${best.name} оволодіває мʼячем.` });
     }
 
     b.ownerSide = toSide;
@@ -2689,7 +2980,7 @@ export class MatchEngine {
         if (progress >= 25 && !best._announcedSolo) {
           this.log({
             type: 'spectacular', side: best.side, kind: 'SOLO_RUN',
-            text: `⚡ Solo run by ${best.name} — ${progress.toFixed(0)}m driven forward.`,
+            text: `⚡ Сольний прохід ${best.name} — ${progress.toFixed(0)}м уперед.`,
           });
           best._announcedSolo = this.tickCount;
         }
@@ -2701,10 +2992,11 @@ export class MatchEngine {
       }
     }
 
-    // Settle cooldown
+    // Settle cooldown — short so decideAction can fire on the next 4-tick
+    // cycle instead of standing still for 1.4 game-sec after every reception.
     if (best.action !== 'PASS' && best.action !== 'SHOOT') {
       best.action = 'HOLD';
-      best.actionTimer = 14;
+      best.actionTimer = 4;
     }
   }
 
@@ -2738,7 +3030,7 @@ export class MatchEngine {
             const ps = b.pendingShot;
             this.log({
               type: 'spectacular', side: ps.fromSide, kind: 'WOODWORK',
-              text: `🪵 Off the post! ${ps.shooterName} hits the woodwork.`,
+              text: `🪵 У штангу! ${ps.shooterName} влучає в каркас.`,
             });
             this.stats[ps.fromSide].onTarget++;  // counts as on target
             // Ball bounces back into play
@@ -2759,7 +3051,7 @@ export class MatchEngine {
           const reflexBonus = ((gk?.attrs.reflexes || 70) - 70) * 0.006;
           // Calibrated so xG 0.10 → ~89% save, xG 0.30 → ~77% save, xG 0.45 → ~68% save.
           // Average shot xG ≈ 0.10 → ~11% goal rate (matches real football).
-          const saveProb = clamp(0.95 - b.pendingShot.xG * 0.6 + reflexBonus, 0.15, 0.96);
+          const saveProb = clamp(0.88 - b.pendingShot.xG * 0.6 + reflexBonus, 0.15, 0.96);
           if (this.rng() < saveProb) {
             this.stats[b.pendingShot.fromSide].onTarget++;
             const ps = b.pendingShot;
@@ -2767,14 +3059,14 @@ export class MatchEngine {
             if (ps.xG >= 0.30) {
               this.log({
                 type: 'spectacular', side: ps.fromSide, kind: 'BIG_CHANCE_MISSED',
-                text: `😱 Big chance MISSED — ${ps.shooterName} denied. xG ${ps.xG.toFixed(2)}.`,
+                text: `😱 Великий шанс ВТРАЧЕНО — ${ps.shooterName} не реалізував. xG ${ps.xG.toFixed(2)}.`,
               });
             }
             // LONG_RANGE_SHOT_SAVED — outside-the-box shot saved
             if (ps.distGoal >= 25) {
               this.log({
                 type: 'spectacular', side: ps.fromSide, kind: 'LONG_RANGE_SHOT_SAVED',
-                text: `💪 Long-range strike saved — ${ps.shooterName} from ${ps.distGoal.toFixed(0)}m.`,
+                text: `💪 Дальній удар відбито — ${ps.shooterName} з ${ps.distGoal.toFixed(0)}м.`,
               });
             }
             // GK save outcomes — Sprint 15 retuned: 65% caught, 30% corner, 5% rebound.
@@ -2783,7 +3075,7 @@ export class MatchEngine {
             const saveOutcome = this.rng();
             if (saveOutcome < 0.65) {
               // Catch — clean hands, goal kick
-              this.log({ type: 'shot', side: ps.fromSide, text: `🥅 ${gk?.name || 'GK'} catches the shot.` });
+              this.log({ type: 'shot', side: ps.fromSide, text: `🥅 ${gk?.name || 'Воротар'} ловить удар.` });
               b.pendingShot = null;
               this._beginGoalKick(goalSide);
             } else if (saveOutcome < 0.95) {
@@ -2791,12 +3083,12 @@ export class MatchEngine {
               const cornerSide = other(goalSide);
               const cornerY = b.y < 34 ? 0.5 : 67.5;
               const cornerX = goalSide === 'home' ? 0.5 : 104.5;
-              this.log({ type: 'shot', side: ps.fromSide, text: `🥅 ${gk?.name || 'GK'} parries to corner. xG ${ps.xG.toFixed(2)}.` });
+              this.log({ type: 'shot', side: ps.fromSide, text: `🥅 ${gk?.name || 'Воротар'} переводить на кутовий. xG ${ps.xG.toFixed(2)}.` });
               b.pendingShot = null;
               this.awardCornerSetPiece(cornerSide, cornerX, cornerY);
             } else {
               // Rebound — ball palmed back into play, attackers can pounce
-              this.log({ type: 'shot', side: ps.fromSide, text: `🥅 ${gk?.name || 'GK'} parries — rebound loose in the box!` });
+              this.log({ type: 'shot', side: ps.fromSide, text: `🥅 ${gk?.name || 'Воротар'} відбиває — відскік у штрафному!` });
               const dirOut = ps.fromSide === 'home' ? 1 : -1;  // back toward attacking direction
               b.vx = dirOut * (3 + this.rng() * 5);
               b.vy = (this.rng() - 0.5) * 6;
@@ -2827,13 +3119,13 @@ export class MatchEngine {
             if (ps.xG < 0.05) {
               this.log({
                 type: 'spectacular', side: scoredBy, kind: 'WONDER_GOAL',
-                text: `✨ WONDER GOAL — ${ps.shooterName} scores against the odds! xG ${ps.xG.toFixed(2)}.`,
+                text: `✨ ШЕДЕВРАЛЬНИЙ ГОЛ — ${ps.shooterName} забиває попри все! xG ${ps.xG.toFixed(2)}.`,
               });
             }
             if (ps.distGoal >= 25) {
               this.log({
                 type: 'spectacular', side: scoredBy, kind: 'LONG_RANGE_GOAL',
-                text: `🚀 LONG-RANGE GOAL — ${ps.shooterName} from ${ps.distGoal.toFixed(0)}m!`,
+                text: `🚀 ГОЛ ЗДАЛЕКУ — ${ps.shooterName} з ${ps.distGoal.toFixed(0)}м!`,
               });
             }
           }
@@ -2874,7 +3166,7 @@ export class MatchEngine {
           });
           this.log({
             type: 'goal', side: scoredBy,
-            text: `⚽ GOAL! ${this.teams[scoredBy].meta.short} score! ${this.score.home}–${this.score.away}.${assistName ? ' Assist: ' + assistName + '.' : ''}`,
+            text: `⚽ ГОЛ! ${this.teams[scoredBy].meta.short} забиває! ${this.score.home}–${this.score.away}.${assistName ? ' Асист: ' + assistName + '.' : ''}`,
             scorerName: scorer?.name, scorerNum: scorer?.num,
             assistName, assistNum: this.lastReceivedPass?.passerNum,
             time: this.gameTime,
@@ -2883,7 +3175,13 @@ export class MatchEngine {
           // came from a deflection / scramble after the original shot. Without
           // a fresh shot count, OT > shots in match stats. Treat the deflection
           // touch as a shot so stats stay coherent.
-          if (!b.pendingShot) this.stats[scoredBy].shots++;
+          // S73: also credit a reasonable xG (real "scramble" goals = ~0.20
+          // close-range chance). Without this, scoreline could show 2 goals
+          // with 0 xG which is impossible by definition.
+          if (!b.pendingShot) {
+            this.stats[scoredBy].shots++;
+            this.stats[scoredBy].xg += 0.20;
+          }
           this.stats[scoredBy].onTarget++;
           b.pendingShot = null;
           // Sprint 18: goal celebration. Move ball to center (kills goal re-fire),
@@ -2898,7 +3196,7 @@ export class MatchEngine {
           });
           this.log({
             type: 'goal', side: scoredBy,
-            text: `⚽ OWN GOAL! ${this.teams[scoredBy].meta.short} benefit. ${this.score.home}–${this.score.away}.`,
+            text: `⚽ АВТОГОЛ! На користь ${this.teams[scoredBy].meta.short}. ${this.score.home}–${this.score.away}.`,
             ownGoal: true,
             time: this.gameTime,
           });
@@ -2929,7 +3227,7 @@ export class MatchEngine {
       const throwSide = lastSide ? other(lastSide) : 'home';
       const tx = clamp(b.x, 1, PITCH_W - 1);
       const ty = b.y <= 0 ? 0.5 : PITCH_H - 0.5;
-      this.log({ type: 'event', side: throwSide, text: `Throw-in to ${this.teams[throwSide].meta.short}.` });
+      this.log({ type: 'event', side: throwSide, text: `Аут на користь ${this.teams[throwSide].meta.short}.` });
       this._beginThrowIn(throwSide, tx, ty);
       return;
     }
@@ -2948,7 +3246,20 @@ export class MatchEngine {
       for (const p of this.teams[side].onPitch) {
         if (p.state.sentOff) continue;
         const speed = Math.hypot(p.vx, p.vy);
-        const drain = 0.012 + 0.010 * (speed / 7);
+        // S63 calibration: role + attribute multipliers. Before this was uniform,
+        // so GKs drained as fast as STs. Target per real-football data: outfield
+        // 25–45% drain over 90 min, GK <10%.
+        const roleMult = p.role === 'GK' ? 0.15
+                       : p.role === 'FB' ? 1.15
+                       : p.role === 'CM' ? 1.10
+                       : p.role === 'CB' ? 0.85
+                       : p.role === 'ST' ? 0.95
+                       : 1.0;
+        const stamAttr = p.attrs?.stamina ?? 60;
+        const attrMult = 1.5 - stamAttr / 100;            // 0.5 (stam=100) .. 1.5 (stam=0)
+        // Halved base so total drain over 90 sim-min stays in target band.
+        const baseDrain = 0.006 + 0.008 * (speed / 7);
+        const drain = baseDrain * roleMult * attrMult;
         p.state.fatigue = Math.min(100, p.state.fatigue + drain);
         p.state.fitness = Math.max(0, 100 - p.state.fatigue);
       }
@@ -2986,7 +3297,7 @@ export class MatchEngine {
         const summary = describeTacticalChange(c.payload);
         this.log({
           type: 'tactical', side: c.side,
-          text: `${this.teams[c.side].meta.short}: ${summary} took effect.`,
+          text: `${this.teams[c.side].meta.short}: ${summary} застосовано.`,
         });
       } else remaining.push(c);
     }
@@ -3009,7 +3320,7 @@ export class MatchEngine {
     team.onPitch[outIdx] = inP;
     team.bench[benchIdx] = outP;
     this.subsUsed[side]++;
-    this.log({ type: 'system', side, text: `${team.meta.short} sub: ${outP.name} ⇄ ${inP.name}` });
+    this.log({ type: 'system', side, text: `${team.meta.short} заміна: ${outP.name} ⇄ ${inP.name}` });
     return { ok: true };
   }
 
@@ -3023,7 +3334,8 @@ export class MatchEngine {
     const opp = this.teams[other(cornerSide)];
     // S30: corner routine variants — in_swinger (default), out_swinger, near_post, short.
     const routine = team.tactics?.cornerRoutine || 'in_swinger';
-    this.log({ type: 'event', side: cornerSide, text: `Corner kick to ${team.meta.short} (${routine.replace('_',' ')}).` });
+    const CORNER_ROUTINE_UA = { in_swinger: 'закручений', out_swinger: 'розкручений', near_post: 'на ближню', short: 'розіграш' };
+    this.log({ type: 'event', side: cornerSide, text: `Кутовий на користь ${team.meta.short} (${CORNER_ROUTINE_UA[routine] || routine}).` });
     // For 'short', pick best short-passer near corner; otherwise best crosser.
     const kicker = routine === 'short'
       ? pickBest(team.onPitch.filter(p => !p.state.sentOff && p.role !== 'GK'),
@@ -3032,11 +3344,12 @@ export class MatchEngine {
           p => passRating(p, 'cross') + (p.attrs.set_pieces || 50) * 0.5);
     if (!kicker) return;
 
-    // Place ball at corner flag; kicker owns
+    // Place ball at corner flag (no owner — ball sits at the flag while
+    // attackers and the kicker walk into position; ball doesn't follow anyone).
     this.ball.x = cornerX; this.ball.y = cornerY; this.ball.z = 0;
     this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0;
-    this.ball.ownerSide = cornerSide;
-    this.ball.ownerNum = kicker.num;
+    this.ball.ownerSide = null;
+    this.ball.ownerNum = null;
     this.ball.lastTouchSide = cornerSide;
     this.ball.lastTouchNum = kicker.num;
     this.ball.inFlight = false;
@@ -3072,12 +3385,36 @@ export class MatchEngine {
     const gkX = goalX === 105 ? 102 : 3;
     const gkY = isLowCorner ? 35 : 33;  // slight off-centre toward far post
 
+    // Hybrid snap: if kicker is far from the flag, snap them to within 4m so
+    // the 80-tick setup is enough to walk in — no teleport, no missed kicks.
+    const _kd = dist(kicker.x, kicker.y, cornerX, cornerY);
+    if (_kd > 4) {
+      const _kt = (_kd - 4) / _kd;
+      kicker.x = kicker.x + (cornerX - kicker.x) * _kt;
+      kicker.y = kicker.y + (cornerY - kicker.y) * _kt;
+      kicker.vx = 0; kicker.vy = 0;
+    }
+
     this._setPieceTargets = {};
     this._setPieceTargets[`${cornerSide}-${kicker.num}`] = { x: cornerX, y: cornerY };
 
+    // Hybrid-snap attackers to within 8m of their box spot so the 80-tick
+    // setup is enough for them to actually arrive before the kick is taken.
+    const snapToWithin = (p, tx, ty, within) => {
+      const d = dist(p.x, p.y, tx, ty);
+      if (d > within) {
+        const t = (d - within) / d;
+        p.x = p.x + (tx - p.x) * t;
+        p.y = p.y + (ty - p.y) * t;
+        p.vx = 0; p.vy = 0;
+      }
+    };
+
     const fieldAttackers = team.onPitch.filter(p => !p.state.sentOff && p.role !== 'GK' && p.num !== kicker.num);
     fieldAttackers.slice(0, attackerSpots.length).forEach((p, i) => {
-      this._setPieceTargets[`${cornerSide}-${p.num}`] = attackerSpots[i];
+      const spot = attackerSpots[i];
+      snapToWithin(p, spot.x, spot.y, 8);
+      this._setPieceTargets[`${cornerSide}-${p.num}`] = spot;
     });
     fieldAttackers.slice(attackerSpots.length).forEach(p => {
       // Stragglers stay at edge of opp half
@@ -3089,7 +3426,9 @@ export class MatchEngine {
 
     const fieldDefenders = opp.onPitch.filter(p => !p.state.sentOff && p.role !== 'GK');
     fieldDefenders.slice(0, defenderSpots.length).forEach((p, i) => {
-      this._setPieceTargets[`${other(cornerSide)}-${p.num}`] = defenderSpots[i];
+      const spot = defenderSpots[i];
+      snapToWithin(p, spot.x, spot.y, 8);
+      this._setPieceTargets[`${other(cornerSide)}-${p.num}`] = spot;
     });
     fieldDefenders.slice(defenderSpots.length).forEach(p => {
       this._setPieceTargets[`${other(cornerSide)}-${p.num}`] = { x: boxEdgeX + (goalX === 105 ? -10 : 10), y: 34 };
@@ -3132,7 +3471,7 @@ export class MatchEngine {
   awardPenaltySetPiece(side, fouler) {
     const opp = this.teams[other(side)];
     const team = this.teams[side];
-    this.log({ type: 'event', side, text: `🎯 PENALTY awarded to ${team.meta.short}!` });
+    this.log({ type: 'event', side, text: `🎯 ПЕНАЛЬТІ на користь ${team.meta.short}!` });
 
     const kicker = pickBest(team.onPitch.filter(p => !p.state.sentOff && p.role !== 'GK'),
       p => penaltyRating(p));
@@ -3184,7 +3523,9 @@ export class MatchEngine {
     if (!sp) return;
 
     if (sp.phase === 'setup') {
-      // Move all players toward scripted targets
+      // Move all players toward scripted targets — including the kicker, who
+      // must walk to the ball at the flag/spot. actMoveToTarget naturally
+      // decelerates when within 0.4m of target, so they settle there.
       for (const side of ['home', 'away']) {
         for (const p of this.teams[side].onPitch) {
           if (p.state.sentOff) continue;
@@ -3192,7 +3533,7 @@ export class MatchEngine {
           if (target) {
             p.targetX = target.x;
             p.targetY = target.y;
-            p.action = p.num === sp.kickerNum && side === sp.side ? 'IDLE' : 'MOVE_TO_POSITION';
+            p.action = 'MOVE_TO_POSITION';
           }
         }
       }
@@ -3224,15 +3565,18 @@ export class MatchEngine {
     // S30: 'short' = ground pass to nearby teammate; lofted variants curl differently.
     const isShort = sp.routine === 'short';
     const isInSwinger = sp.routine === 'in_swinger' || !sp.routine;  // default
-    // Power scaled to distance; short routines fly slower and lower.
-    const power = clamp(dxy * (isShort ? 0.6 : 0.95), isShort ? 8 : 12, 24);
+    // Compute horizontal speed so the ball actually reaches the target.
+    // Flight time T = 2*vz/g for lofted; ground ball uses different drag.
+    const vz = isShort ? 1.2 : 5.5;
+    const flightTime = isShort ? 0.6 : (2 * vz / 9.81);   // ~1.12s lofted
+    const power = clamp(dxy / flightTime, isShort ? 8 : 14, isShort ? 18 : 38);
     // Curl: in_swinger curls inward (toward goal), out_swinger outward (away).
     const curl = isInSwinger ? 0.06 : (sp.routine === 'out_swinger' ? -0.06 : 0);
     const noise = (this.rng() - 0.5) * 0.10 + curl;
     const ang = Math.atan2(dy, dx) + noise;
     this.ball.vx = Math.cos(ang) * power;
     this.ball.vy = Math.sin(ang) * power;
-    this.ball.vz = isShort ? 0.5 : 5.5;
+    this.ball.vz = vz;
     this.ball.x = kicker.x + Math.cos(ang) * 0.7;
     this.ball.y = kicker.y + Math.sin(ang) * 0.7;
     this.ball.z = isShort ? 0.2 : 0.4;
@@ -3247,7 +3591,7 @@ export class MatchEngine {
       kickTick: this.tickCount, type: isShort ? 'corner_short' : 'corner',
     };
     this.stats[sp.side].passes++;
-    const verb = isShort ? 'plays it short' : (sp.routine === 'near_post' ? 'whips it to the near post' : sp.routine === 'out_swinger' ? 'sends an out-swinger' : 'curls in an in-swinger');
+    const verb = isShort ? 'розігрує накоротко' : (sp.routine === 'near_post' ? 'подає на ближню штангу' : sp.routine === 'out_swinger' ? 'розкручує мʼяч' : 'закручує мʼяч у штрафний');
     this.log({ type: 'event', side: sp.side, text: `${kicker.name} ${verb}.` });
     this.setPiece = null;
     this._setPieceTargets = null;
@@ -3289,7 +3633,7 @@ export class MatchEngine {
     this.stats[sp.side].shots++;
     this.stats[sp.side].xg += xG;
     this._detectChanceCreatedAndKeyPass(this.ball.pendingShot);
-    this.log({ type: 'shot', side: sp.side, text: `🎯 ${kicker.name} steps up... xG ${xG.toFixed(2)}.` });
+    this.log({ type: 'shot', side: sp.side, text: `🎯 ${kicker.name} підходить до мʼяча... xG ${xG.toFixed(2)}.` });
     this.setPiece = null;
     this._setPieceTargets = null;
   }
@@ -3331,7 +3675,7 @@ export class MatchEngine {
         kickTick: this.tickCount, type: 'fk_whip',
       };
       this.stats[sp.side].passes++;
-      this.log({ type: 'event', side: sp.side, text: `${kicker.name} whips the free kick into the box.` });
+      this.log({ type: 'event', side: sp.side, text: `${kicker.name} навішує штрафний у штрафний.` });
     } else if (wantDirect || wantLowDrive) {
       // Direct attempt — standard or low-driven (less curl, more power).
       const aimY = 34 + (this.rng() - 0.5) * 5;
@@ -3361,7 +3705,7 @@ export class MatchEngine {
       this.stats[sp.side].shots++;
       this.stats[sp.side].xg += xG;
       this._detectChanceCreatedAndKeyPass(this.ball.pendingShot);
-      const verb = wantLowDrive ? 'drives a low free kick' : 'curls a free kick toward goal';
+      const verb = wantLowDrive ? 'низом бʼє штрафний' : 'закручує штрафний у ворота';
       this.log({ type: 'shot', side: sp.side, text: `${kicker.name} ${verb}. xG ${xG.toFixed(2)}.` });
     } else {
       // Short pass to nearest free teammate
@@ -3387,7 +3731,7 @@ export class MatchEngine {
           kickTick: this.tickCount, type: 'short',
         };
         this.stats[sp.side].passes++;
-        this.log({ type: 'event', side: sp.side, text: `${kicker.name} → ${target.name} from the free kick.` });
+        this.log({ type: 'event', side: sp.side, text: `${kicker.name} → ${target.name} зі штрафного.` });
       }
     }
     this.setPiece = null;
@@ -3453,7 +3797,7 @@ export class MatchEngine {
       this.stats[winner.side].shots++;
       this.stats[winner.side].xg += xG;
       this._detectChanceCreatedAndKeyPass(b.pendingShot);
-      this.log({ type: 'shot', side: winner.side, text: `🪶 ${winner.name} heads it goalward! xG ${xG.toFixed(2)}.` });
+      this.log({ type: 'shot', side: winner.side, text: `🪶 ${winner.name} бʼє головою у ворота! xG ${xG.toFixed(2)}.` });
     } else {
       // Defensive header — clear away from own goal
       const ownGoalX = winner.side === 'home' ? 0 : 105;
@@ -3469,7 +3813,7 @@ export class MatchEngine {
       b.inFlight = true;
       b.pendingShot = null;
       b.pendingPass = null;
-      this.log({ type: 'event', side: winner.side, text: `${winner.name} heads it clear.` });
+      this.log({ type: 'event', side: winner.side, text: `${winner.name} вибиває головою.` });
     }
     return true;
   }
@@ -3484,7 +3828,7 @@ export class MatchEngine {
     if (cardEv) this.log(cardEv);
     this.log({
       type: 'event', side: foulerSide,
-      text: `Foul by ${fouler.name}${fouled ? ' on ' + fouled.name : ''}.`,
+      text: `Фол від ${fouler.name}${fouled ? ' на ' + fouled.name : ''}.`,
     });
 
     // Penalty if foul is inside the defending team's penalty area
@@ -3590,11 +3934,27 @@ export class MatchEngine {
       const gk = opp.onPitch.find(p => p.role === 'GK' && !p.state.sentOff);
       if (gk) this._setPieceTargets[`${other(side)}-${gk.num}`] = { x: side === 'home' ? 102 : 3, y: 34 };
 
+      // Push attackers out of the keeper's immediate area (≤4.5m). Stops the
+      // visual "opponent standing on the GK" you'd otherwise inherit from
+      // whatever positions players were in at the moment of the foul.
+      if (gk) {
+        const teamAttackers = team.onPitch.filter(p => !p.state.sentOff && p.num !== taker.num);
+        teamAttackers.forEach((p, i) => {
+          const d = dist(p.x, p.y, gk.x, gk.y);
+          if (d < 4.5) {
+            // Move them to the edge of the penalty box, spread along Y.
+            const edgeX = side === 'home' ? 88 : 17;
+            const baseY = 24 + (i % 4) * 6;
+            this._setPieceTargets[`${side}-${p.num}`] = { x: edgeX, y: baseY };
+          }
+        });
+      }
+
       this.setPiece = {
         type: 'FREE_KICK',
         side,
         phase: 'setup',
-        timer: 16,
+        timer: 70,                  // ~7 sec at friendly speed — enough for wall + box shape to form
         kickerNum: taker.num,
         directShot: this.rng() < 0.45,
         targetX: goalX,
@@ -3620,8 +3980,8 @@ export class MatchEngine {
     const isSerious = r < 0.10;
     const pauseTicks = isSerious ? 300 : 80;
     const text = isSerious
-      ? `🚑 SERIOUS INJURY — ${victim.name} is down and won't continue.`
-      : `🤕 ${victim.name} stays down for treatment.`;
+      ? `🚑 СЕРЙОЗНА ТРАВМА — ${victim.name} не зможе продовжити.`
+      : `🤕 ${victim.name} лежить, отримує допомогу.`;
     this.log({ type: 'event', side: victim.side, text });
     this._startPause('injury', [{ name: 'aftermath', ticks: pauseTicks }], {
       skipDecisions: true,
@@ -3632,7 +3992,7 @@ export class MatchEngine {
           // follow-up. For now the team plays a man down.
           this.log({
             type: 'event', side: victim.side,
-            text: `${victim.name} stretchered off — ${this.eligible(victim.side).length} men.`,
+            text: `${victim.name} винесли на ношах — ${this.eligible(victim.side).length} гравців.`,
           });
         }
       },
@@ -3646,7 +4006,7 @@ export class MatchEngine {
       // Direct red
       fouler.state.sentOff = true;
       this.stats[foulerSide].reds++;
-      return { type: 'event', side: foulerSide, text: `🟥 RED CARD — ${fouler.name} sent off! Down to ${this.eligible(foulerSide).length} men.` };
+      return { type: 'event', side: foulerSide, text: `🟥 ЧЕРВОНА — ${fouler.name} вилучено! ${this.eligible(foulerSide).length} гравців на полі.` };
     }
     const yellowProb = fouler.state.yellow >= 1 ? 0.05 : 0.18;
     if (r < 0.005 + yellowProb) {
@@ -3662,13 +4022,13 @@ export class MatchEngine {
             tm.state.morale = Math.max(0, (tm.state.morale || 65) - 2);
           }
         }
-        return { type: 'event', side: foulerSide, text: `🟨🟨 SECOND YELLOW — ${fouler.name} sent off!` };
+        return { type: 'event', side: foulerSide, text: `🟨🟨 ДРУГА ЖОВТА — ${fouler.name} вилучено!` };
       }
       fouler.state.yellow = 1;
       this.stats[foulerSide].yellows++;
       // S32: yellow card → mild morale drop on offender.
       fouler.state.morale = Math.max(0, (fouler.state.morale || 65) - 2);
-      return { type: 'event', side: foulerSide, text: `🟨 Yellow card — ${fouler.name}.` };
+      return { type: 'event', side: foulerSide, text: `🟨 Жовта картка — ${fouler.name}.` };
     }
     return null;
   }
@@ -3840,14 +4200,14 @@ function closestPlayer(arr, x, y) {
 
 function describeTacticalChange(payload) {
   const parts = [];
-  if (payload.formation) parts.push(`form → ${payload.formation}`);
-  if (payload.mentality !== undefined) parts.push(`ment ${payload.mentality > 0 ? '+' : ''}${payload.mentality}`);
-  if (payload.tempo) parts.push(`tempo ${payload.tempo}`);
-  if (payload.pressHeight) parts.push(`press hgt ${payload.pressHeight}`);
-  if (payload.pressInt) parts.push(`press int ${payload.pressInt}`);
-  if (payload.defLine) parts.push(`def line ${payload.defLine}`);
-  if (payload.width) parts.push(`width ${payload.width}`);
-  if (payload.passing) parts.push(`passing ${payload.passing}`);
+  if (payload.formation) parts.push(`схема → ${payload.formation}`);
+  if (payload.mentality !== undefined) parts.push(`мент. ${payload.mentality > 0 ? '+' : ''}${payload.mentality}`);
+  if (payload.tempo) parts.push(`темп ${payload.tempo}`);
+  if (payload.pressHeight) parts.push(`висота пресу ${payload.pressHeight}`);
+  if (payload.pressInt) parts.push(`інтенс. пресу ${payload.pressInt}`);
+  if (payload.defLine) parts.push(`лінія захисту ${payload.defLine}`);
+  if (payload.width) parts.push(`ширина ${payload.width}`);
+  if (payload.passing) parts.push(`пас ${payload.passing}`);
   return parts.join(', ');
 }
 

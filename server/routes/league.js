@@ -4,7 +4,7 @@
 //   GET /api/leagues/:slug/top-scorers
 //   GET /api/leagues/:slug/top-assists
 
-import { World, League, Season, Team, Player, MatchResult } from '../db/models/index.js';
+import { World, League, Season, Team, Player, MatchResult, Fixture } from '../db/models/index.js';
 
 const dbReady = (app, reply) => {
   if (!app.dbReady) { reply.code(503).send({ error: 'db_not_ready' }); return false; }
@@ -25,7 +25,7 @@ export default async function leagueRoutes(app) {
     const league = await resolveLeague(req.params.slug);
     if (!league) return reply.code(404).send({ error: 'league_not_found' });
     const teams = await Team.find({ leagueId: league._id })
-      .select('slug name short color tier').lean();
+      .select('slug name short color emblemUrl tier').lean();
     const teamMap = Object.fromEntries(teams.map(t => [t._id.toString(), t]));
     const init = (id) => ({
       teamId: id, team: teamMap[id], P:0, W:0, D:0, L:0, GF:0, GA:0, GD:0, Pts:0,
@@ -69,6 +69,44 @@ export default async function leagueRoutes(app) {
       league,
       top: players.map((p, i) => ({
         rank: i + 1, player: p, team: teamMap[p.teamId.toString()] || null,
+      })),
+    };
+  });
+
+  // ---- Upcoming fixtures (next 2 rounds) ----
+  app.get('/api/leagues/:slug/upcoming', async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    const league = await resolveLeague(req.params.slug);
+    if (!league) return reply.code(404).send({ error: 'league_not_found' });
+    const fxs = await Fixture.find({
+      leagueId: league._id,
+      state: 'scheduled',
+    }).sort({ round: 1, scheduledAt: 1 }).limit(40).lean();
+    if (!fxs.length) return { league, rounds: [] };
+    // Group by round, take first 2 round buckets.
+    const byRound = {};
+    for (const f of fxs) {
+      const r = f.round ?? 0;
+      (byRound[r] = byRound[r] || []).push(f);
+    }
+    const roundNums = Object.keys(byRound).map(Number).sort((a, b) => a - b).slice(0, 2);
+    const teamIds = new Set();
+    for (const r of roundNums) for (const f of byRound[r]) {
+      teamIds.add(f.homeTeamId.toString()); teamIds.add(f.awayTeamId.toString());
+    }
+    const teams = await Team.find({ _id: { $in: [...teamIds] } })
+      .select('slug name short color emblemUrl').lean();
+    const teamMap = Object.fromEntries(teams.map(t => [t._id.toString(), t]));
+    return {
+      league,
+      rounds: roundNums.map(r => ({
+        round: r,
+        fixtures: byRound[r].map(f => ({
+          id: f._id,
+          scheduledAt: f.scheduledAt,
+          home: teamMap[f.homeTeamId.toString()] || null,
+          away: teamMap[f.awayTeamId.toString()] || null,
+        })),
       })),
     };
   });

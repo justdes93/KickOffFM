@@ -81,26 +81,46 @@ function summary(e) {
 
 if (benchmarkN > 0) {
   let T = { shots: 0, goals: 0, OT: 0, xg: 0, passOK: 0, passAtt: 0,
-            corners: 0, fouls: 0, errors: 0 };
+            corners: 0, fouls: 0, yellows: 0, reds: 0, offsides: 0,
+            tackles: 0, intercepts: 0, errors: 0, draws: 0, cleanSheets: 0,
+            highScoring: 0, scoreless: 0 };
   const t0 = Date.now();
   for (let i = 0; i < benchmarkN; i++) {
     try {
       const e = runMatch(baseSeed + i);
       T.shots += e.stats.home.shots + e.stats.away.shots;
-      T.goals += e.score.home + e.score.away;
+      const g = e.score.home + e.score.away;
+      T.goals += g;
       T.OT += e.stats.home.onTarget + e.stats.away.onTarget;
       T.xg += e.stats.home.xg + e.stats.away.xg;
       T.passAtt += e.stats.home.passes + e.stats.away.passes;
       T.passOK += e.stats.home.passesCompleted + e.stats.away.passesCompleted;
       T.corners += e.stats.home.corners + e.stats.away.corners;
       T.fouls += e.stats.home.fouls + e.stats.away.fouls;
+      T.yellows += (e.stats.home.yellows || 0) + (e.stats.away.yellows || 0);
+      T.reds += (e.stats.home.reds || 0) + (e.stats.away.reds || 0);
+      T.offsides += (e.stats.home.offsides || 0) + (e.stats.away.offsides || 0);
+      T.tackles += (e.stats.home.tackles || 0) + (e.stats.away.tackles || 0);
+      T.intercepts += (e.stats.home.interceptions || 0) + (e.stats.away.interceptions || 0);
+      if (e.score.home === e.score.away) T.draws++;
+      if (e.score.home === 0 || e.score.away === 0) T.cleanSheets++;
+      if (g >= 5) T.highScoring++;
+      if (g === 0) T.scoreless++;
     } catch (err) { T.errors++; console.error(`match ${i}: ${err.message}`); }
   }
   const elapsed = (Date.now() - t0) / 1000;
   const N = benchmarkN;
+  const otRatio = T.shots ? (T.OT / T.shots * 100) : 0;
+  const passAccPct = T.passAtt ? (T.passOK / T.passAtt * 100) : 0;
   console.log(`Benchmark: ${N} matches in ${elapsed.toFixed(1)}s (${(N / elapsed).toFixed(1)} matches/sec)`);
-  console.log(`  shots ${(T.shots / N).toFixed(2)}  goals ${(T.goals / N).toFixed(2)}  OT ${(T.OT / N).toFixed(2)}  xG ${(T.xg / N).toFixed(2)}`);
-  console.log(`  passAcc ${((T.passOK / Math.max(1, T.passAtt)) * 100).toFixed(1)}%  corners ${(T.corners / N).toFixed(2)}  fouls ${(T.fouls / N).toFixed(2)}`);
+  console.log(`  Per match (both teams):`);
+  console.log(`    shots ${(T.shots / N).toFixed(2)}  OT ${(T.OT / N).toFixed(2)} (${otRatio.toFixed(1)}%)  xG ${(T.xg / N).toFixed(2)}  goals ${(T.goals / N).toFixed(2)}`);
+  console.log(`    passAcc ${passAccPct.toFixed(1)}%  corners ${(T.corners / N).toFixed(2)}  fouls ${(T.fouls / N).toFixed(2)}  yellow ${(T.yellows / N).toFixed(2)}  red ${(T.reds / N).toFixed(2)}`);
+  console.log(`    offsides ${(T.offsides / N).toFixed(2)}  tackles ${(T.tackles / N).toFixed(2)}  intercepts ${(T.intercepts / N).toFixed(2)}`);
+  console.log(`  Per team:`);
+  console.log(`    shots ${(T.shots / N / 2).toFixed(2)}  OT ${(T.OT / N / 2).toFixed(2)}  xG ${(T.xg / N / 2).toFixed(2)}  goals ${(T.goals / N / 2).toFixed(2)}`);
+  console.log(`  Match outcome distribution:`);
+  console.log(`    draws ${T.draws} (${(T.draws / N * 100).toFixed(0)}%)  scoreless ${T.scoreless} (${(T.scoreless / N * 100).toFixed(0)}%)  high-scoring (≥5) ${T.highScoring} (${(T.highScoring / N * 100).toFixed(0)}%)  clean-sheets ${T.cleanSheets}`);
   if (T.errors > 0) console.log(`  errors: ${T.errors}`);
 } else {
   const e = runMatch(baseSeed);

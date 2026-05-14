@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "kickoff-fm",
-      "runtimeExecutable": "echo",
-      "runtimeArgs": ["fastify-already-running"],
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "server:dev"],
       "port": 3000
     }
   ]

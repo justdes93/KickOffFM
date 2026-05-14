@@ -9,15 +9,21 @@ const PlayerSchema = new mongoose.Schema({
 
   // Identity
   num:          { type: Number, required: true },                  // shirt
-  name:         { type: String, required: true },
-  role:         { type: String, required: true },                  // GK | CB | FB | DM | CM | AM | W | ST
-  role_kind:    { type: String, default: null },                   // S27 sub-role
+  name:         { type: String, required: true },                  // combined "First Last" — auto from firstName+lastName when set
+  firstName:    { type: String, default: '' },                     // S57
+  lastName:     { type: String, default: '' },                     // S57
+  role:         { type: String, required: true },                  // primary: GK | CB | FB | DM | CM | AM | W | ST
+  secondaryRole:{ type: String, default: '' },                     // S57 optional fallback position
+  role_kind:    { type: String, default: null },                   // legacy sub-role (engine compat; no longer edited in UI)
   duty:         { type: String, default: 'support' },              // defend | support | attack
   tier:         { type: Number, default: 3 },                      // 1 (elite) .. 5 (squad)
 
   age:          { type: Number, default: 24 },
   nationality:  { type: String, default: '' },                     // ISO-2 country code
   preferredFoot:{ type: String, enum: ['L', 'R', 'BOTH'], default: 'R' },
+
+  // S57: external profile reference
+  transfermarktUrl: { type: String, default: '' },
 
   // 24 outfield / 22 GK attrs (S26). Stored as nested object — engine reads as `p.attrs.X`.
   attrs:        { type: mongoose.Schema.Types.Mixed, required: true },

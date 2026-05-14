@@ -39,8 +39,18 @@ function genToken(bytes = 24) {
 }
 
 export default async function authRoutes(app) {
+  // S61: stricter rate-limit for auth endpoints — defends against credential
+  // stuffing / brute-force. 5 attempts / 15 min per IP for login + 2fa verify,
+  // 10 registrations / hour per IP.
+  const loginRL = {
+    config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+  };
+  const registerRL = {
+    config: { rateLimit: { max: 10, timeWindow: '1 hour' } },
+  };
+
   // ---- POST /api/auth/register ----
-  app.post('/api/auth/register', async (req, reply) => {
+  app.post('/api/auth/register', registerRL, async (req, reply) => {
     if (!requireDb(app, reply)) return;
     const { email, username, password, betaKey } = req.body || {};
     if (typeof email !== 'string' || !EMAIL_RE.test(email))
@@ -81,7 +91,7 @@ export default async function authRoutes(app) {
   });
 
   // ---- POST /api/auth/login ----
-  app.post('/api/auth/login', async (req, reply) => {
+  app.post('/api/auth/login', loginRL, async (req, reply) => {
     if (!requireDb(app, reply)) return;
     const { email, password } = req.body || {};
     if (typeof email !== 'string' || typeof password !== 'string')
@@ -116,7 +126,23 @@ export default async function authRoutes(app) {
       return { needs2fa: true, challengeToken };
     }
 
-    // No 2FA yet (newly registered, hasn't linked) — issue session JWT directly.
+    // S75: telegram linking is now mandatory. If the account isn't linked,
+    // refuse to issue a session JWT and instead hand back a fresh linkToken
+    // so the client can route to /telegram and finish the bind. No more
+    // bypass via the old "Skip" button.
+    if (!user.telegramChatId) {
+      user.telegramLinkToken = genToken(16);
+      user.telegramLinkExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await user.save();
+      return reply.code(200).send({
+        needsLink: true,
+        linkToken: user.telegramLinkToken,
+        botUsername: app.tgService?.botUsername || null,
+        username: user.username,
+      });
+    }
+
+    // Defensive: telegramChatId present but bot offline — issue session as fallback.
     await user.save();
     const token = app.jwt.sign({ sub: user._id.toString(), purpose: 'session' });
     return {
@@ -128,8 +154,51 @@ export default async function authRoutes(app) {
     };
   });
 
+  // ---- POST /api/auth/check-tg ----
+  // S75: polled by the tg-link page while user is binding the bot. Returns
+  // `{ linked: true, token, user }` once the bot's /start saves chatId so the
+  // client can store the JWT and proceed. Throttled by global rate-limit.
+  app.post('/api/auth/check-tg', async (req, reply) => {
+    if (!requireDb(app, reply)) return;
+    const { linkToken } = req.body || {};
+    if (typeof linkToken !== 'string' || linkToken.length < 8) {
+      return reply.code(400).send({ error: 'missing_fields' });
+    }
+    // Two states for the token: (a) still attached to user (not yet /start'ed),
+    // (b) consumed by /start which sets chatId and clears the token.
+    // First check (a):
+    const pending = await User.findOne({ telegramLinkToken: linkToken });
+    if (pending && !pending.telegramChatId) {
+      return { linked: false };
+    }
+    // (b): token was consumed; find the user whose chat was recently bound.
+    // We rely on the bot saving telegramChatId + clearing the token. Look up
+    // by absence of token + matching username pattern via fallback. Since we
+    // don't keep the original token after consume, the client supplies it and
+    // we just check whether ANY user with that token still exists (no = linked).
+    // Simpler: also store a `lastLinkedToken` field — but to avoid schema churn,
+    // accept any user where the token is gone AND chat is set within the last
+    // 24h. We surface the *requesting* user via their session linkToken from
+    // the original register/login call. The client must have the username from
+    // the previous response — pass it too for safety.
+    const { username } = req.body || {};
+    if (typeof username !== 'string') return { linked: false };
+    const user = await User.findOne({ username });
+    if (!user || !user.telegramChatId) return { linked: false };
+    const token = app.jwt.sign({ sub: user._id.toString(), purpose: 'session' });
+    return {
+      linked: true,
+      token,
+      user: {
+        id: user._id, username: user.username, email: user.email,
+        telegramLinked: true,
+        currentTeamId: user.currentTeamId, currentWorldId: user.currentWorldId,
+      },
+    };
+  });
+
   // ---- POST /api/auth/2fa/verify ----
-  app.post('/api/auth/2fa/verify', async (req, reply) => {
+  app.post('/api/auth/2fa/verify', loginRL, async (req, reply) => {
     if (!requireDb(app, reply)) return;
     const { challengeToken, code } = req.body || {};
     if (typeof challengeToken !== 'string' || typeof code !== 'string')

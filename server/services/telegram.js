@@ -33,6 +33,49 @@ export async function initTelegramService(app) {
   }
   app.log.info(`[tg] bot online — @${info.username}`);
 
+  // S59: handle inline callback buttons (Accept / Decline friendly).
+  bot.on('callback_query', async (q) => {
+    try {
+      const data = q.data || '';
+      const [action, friendlyId] = data.split(':');
+      if (action !== 'fr_accept' && action !== 'fr_decline') return;
+      // Resolve user by chatId.
+      const chatId = String(q.message.chat.id);
+      const user = await User.findOne({ telegramChatId: chatId }).select('_id');
+      if (!user) {
+        await bot.answerCallbackQuery(q.id, { text: 'Акаунт не звʼязаний', show_alert: true });
+        return;
+      }
+      const { Friendly } = await import('../db/models/index.js');
+      const f = await Friendly.findById(friendlyId);
+      if (!f) return bot.answerCallbackQuery(q.id, { text: 'Матч не знайдено', show_alert: true });
+      if (f.state !== 'pending') return bot.answerCallbackQuery(q.id, { text: 'Запрошення прострочене', show_alert: true });
+      if (!f.opponentManagerId || f.opponentManagerId.toString() !== user._id.toString()) {
+        return bot.answerCallbackQuery(q.id, { text: 'Не ваше запрошення', show_alert: true });
+      }
+      if (action === 'fr_accept') {
+        const now = new Date();
+        f.state = 'scheduled';
+        f.acceptedAt = now;
+        f.scheduledAt = new Date(now.getTime() + 5 * 60 * 1000);
+        await f.save();
+        await bot.answerCallbackQuery(q.id, { text: '✓ Прийнято. Матч за 5 хв.' });
+        await bot.editMessageText(`✅ Ви прийняли товарняк. Кікофф за 5 хвилин!`, {
+          chat_id: chatId, message_id: q.message.message_id,
+        });
+      } else {
+        f.state = 'declined';
+        await f.save();
+        await bot.answerCallbackQuery(q.id, { text: '✕ Відхилено' });
+        await bot.editMessageText(`❌ Ви відхилили товарняк.`, {
+          chat_id: chatId, message_id: q.message.message_id,
+        });
+      }
+    } catch (err) {
+      app.log.warn({ err: err.message }, '[tg] callback_query failed');
+    }
+  });
+
   bot.onText(/^\/start(?:\s+([a-f0-9]{8,64}))?$/i, async (msg, match) => {
     const chatId = String(msg.chat.id);
     const linkToken = match?.[1];
@@ -75,12 +118,37 @@ export async function initTelegramService(app) {
         `🔐 Код входу Kick\\-Off FM: *${escMd(code)}*\n_Дійсний 5 хвилин\\._`,
         { parse_mode: 'MarkdownV2' });
     },
+    // S59: send a friendly-match invite with inline Accept/Decline buttons.
+    // Uses HTML parse mode (safer than MarkdownV2 — fewer reserved chars).
+    async sendFriendlyInvite(chatId, { friendlyId, challenger, myTeam, oppTeam }) {
+      const text =
+        `⚽ <b>Нове запрошення на товарняк!</b>\n\n` +
+        `<b>${escHtml(challenger)}</b> (${escHtml(oppTeam)}) кличе вас на матч.\n` +
+        `Ваша команда: <b>${escHtml(myTeam)}</b>\n\n` +
+        `У вас 5 хвилин на відповідь. Якщо приймете — матч стартує за 5 хв.`;
+      await bot.sendMessage(chatId, text, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✓ Прийняти', callback_data: `fr_accept:${friendlyId}` },
+            { text: '✕ Відхилити', callback_data: `fr_decline:${friendlyId}` },
+          ]],
+        },
+      });
+    },
   };
 }
 
 function escMd(s) {
   // Escape MarkdownV2 reserved chars
   return String(s).replace(/[_*[\]()~`>#+=\-|{}.!\\]/g, (c) => '\\' + c);
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 async function noopSend() {

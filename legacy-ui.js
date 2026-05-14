@@ -97,9 +97,9 @@ function renderRoster(sel, team) {
       <span class="num">${p.num}</span>
       <span class="name">${p.name}</span>
       <span class="pos">${p.role}</span>
-      <span class="pos" title="Overall">${ovr}</span>
-      <span class="pos" title="${isGK ? 'Reflexes' : 'Pace'}">${second}</span>
-      <span class="pos" title="${isGK ? 'Handling' : 'Finishing'}">${third}</span>
+      <span class="pos" title="Рейтинг">${ovr}</span>
+      <span class="pos" title="${isGK ? 'Реакція' : 'Швидкість'}">${second}</span>
+      <span class="pos" title="${isGK ? 'Прийом мʼяча' : 'Завершення'}">${third}</span>
     `;
     row.addEventListener('click', () => openPlayerModal(p));
     root.appendChild(row);
@@ -110,52 +110,52 @@ function renderRoster(sel, team) {
 
 const ATTR_META = {
   // Outfield Technical
-  dribbling:    { label: 'Dribbling',     desc: 'Beats opponents 1v1 with the ball.' },
-  finishing:    { label: 'Finishing',     desc: 'Converts close-range shooting chances.' },
-  first_touch:  { label: 'First touch',   desc: 'Controls difficult passes cleanly.' },
-  heading:      { label: 'Heading',       desc: 'Accuracy and power on aerial duels.' },
-  long_shots:   { label: 'Long shots',    desc: 'Quality of shots from outside the box.' },
-  passing:      { label: 'Passing',       desc: 'Short and long pass accuracy.' },
-  tackling:     { label: 'Tackling',      desc: 'Wins ground duels cleanly.' },
-  crossing:     { label: 'Crossing',      desc: 'Delivery into the box from wide.' },
-  marking:      { label: 'Marking',       desc: 'Tracks opponents off the ball.' },
-  set_pieces:   { label: 'Set pieces',    desc: 'Corner, free-kick and penalty quality.' },
+  dribbling:    { label: 'Дриблінг',         desc: 'Обігрування суперника 1-в-1 з мʼячем.' },
+  finishing:    { label: 'Завершення',       desc: 'Реалізація шансів з близької відстані.' },
+  first_touch:  { label: 'Перший дотик',     desc: 'Чисто приймає складні передачі.' },
+  heading:      { label: 'Гра головою',      desc: 'Точність і сила в повітряних дуелях.' },
+  long_shots:   { label: 'Дальні удари',     desc: 'Якість ударів з-за меж штрафного.' },
+  passing:      { label: 'Пас',              desc: 'Точність коротких і довгих передач.' },
+  tackling:     { label: 'Відбір',           desc: 'Чисто виграє наземні єдиноборства.' },
+  crossing:     { label: 'Навіс',            desc: 'Подача в штрафний з флангу.' },
+  marking:      { label: 'Опіка',            desc: 'Тримає суперника без мʼяча.' },
+  set_pieces:   { label: 'Стандарти',        desc: 'Якість кутових, штрафних, пенальті.' },
   // Mental
-  anticipation: { label: 'Anticipation',  desc: 'Reads play and intercepts.' },
-  composure:    { label: 'Composure',     desc: 'Keeps cool in shooting positions.' },
-  concentration:{ label: 'Concentration', desc: 'Avoids defensive lapses over 90 min.' },
-  decisions:    { label: 'Decisions',     desc: 'Picks the right action under pressure.' },
-  off_the_ball: { label: 'Off the ball',  desc: 'Finds space when team has possession.' },
-  positioning:  { label: 'Positioning',   desc: 'Defensive shape without the ball.' },
-  vision:       { label: 'Vision',        desc: 'Sees through-ball and key-pass options.' },
-  work_rate:    { label: 'Work rate',     desc: 'Distance covered, recovery runs.' },
+  anticipation: { label: 'Передбачення',     desc: 'Читає гру і перехоплює.' },
+  composure:    { label: 'Холоднокровність', desc: 'Зберігає спокій у моментах для удару.' },
+  concentration:{ label: 'Концентрація',     desc: 'Уникає захисних помилок за 90 хв.' },
+  decisions:    { label: 'Рішення',          desc: 'Обирає правильну дію під тиском.' },
+  off_the_ball: { label: 'Без мʼяча',        desc: 'Знаходить простір коли команда атакує.' },
+  positioning:  { label: 'Позиційна гра',    desc: 'Захисна структура без мʼяча.' },
+  vision:       { label: 'Бачення',          desc: 'Бачить розрізні і ключові передачі.' },
+  work_rate:    { label: 'Працелюбність',    desc: 'Дистанція і ривки на повернення.' },
   // Physical
-  acceleration: { label: 'Acceleration',  desc: 'Speed over the first 5 metres.' },
-  agility:      { label: 'Agility',       desc: 'Turning and changing direction.' },
-  jumping_reach:{ label: 'Jumping reach', desc: 'Aerial duel height.' },
-  pace:         { label: 'Pace',          desc: 'Top running speed.' },
-  stamina:      { label: 'Stamina',       desc: 'Endurance through 90+ minutes.' },
-  strength:     { label: 'Strength',      desc: 'Holds off challenges, wins ground duels.' },
+  acceleration: { label: 'Прискорення',      desc: 'Швидкість перших 5 метрів.' },
+  agility:      { label: 'Спритність',       desc: 'Повороти і зміна напрямку.' },
+  jumping_reach:{ label: 'Стрибок',          desc: 'Висота у повітряних дуелях.' },
+  pace:         { label: 'Швидкість',        desc: 'Максимальна швидкість бігу.' },
+  stamina:      { label: 'Витривалість',     desc: 'Запас сил на 90+ хвилин.' },
+  strength:     { label: 'Сила',             desc: 'Утримує суперника, виграє єдиноборства.' },
   // GK
-  handling:        { label: 'Handling',         desc: 'Catches shots cleanly.' },
-  reflexes:        { label: 'Reflexes',         desc: 'Reacts to point-blank shots.' },
-  aerial_reach:    { label: 'Aerial reach',     desc: 'Claims crosses in the box.' },
-  one_on_ones:     { label: 'One on ones',      desc: 'Wins 1v1s vs forwards.' },
-  kicking:         { label: 'Kicking',          desc: 'Distribution distance and accuracy.' },
-  command_of_area: { label: 'Command of area',  desc: 'Organises defence in the box.' },
-  communication:   { label: 'Communication',    desc: 'Coordinates with teammates.' },
-  rushing_out:     { label: 'Rushing out',      desc: 'Comes off line to clear danger.' },
+  handling:        { label: 'Прийом мʼяча',    desc: 'Чисто ловить удари.' },
+  reflexes:        { label: 'Реакція',         desc: 'Реагує на удари впритул.' },
+  aerial_reach:    { label: 'Гра на виходах',  desc: 'Збирає навіси у штрафному.' },
+  one_on_ones:     { label: 'Один на один',    desc: 'Виграє 1-в-1 проти нападника.' },
+  kicking:         { label: 'Введення мʼяча',  desc: 'Дальність і точність вибивання.' },
+  command_of_area: { label: 'Володіння зоною', desc: 'Організовує захист у штрафному.' },
+  communication:   { label: 'Спілкування',     desc: 'Координує дії з партнерами.' },
+  rushing_out:     { label: 'Вихід з воріт',   desc: 'Виходить грати, щоб усунути загрозу.' },
 };
 
 const OUTFIELD_GROUPS = {
-  Technical: ['dribbling','finishing','first_touch','heading','long_shots','passing','tackling','crossing','marking','set_pieces'],
-  Mental:    ['anticipation','composure','concentration','decisions','off_the_ball','positioning','vision','work_rate'],
-  Physical:  ['acceleration','agility','jumping_reach','pace','stamina','strength'],
+  'Техніка':  ['dribbling','finishing','first_touch','heading','long_shots','passing','tackling','crossing','marking','set_pieces'],
+  'Ментальні':['anticipation','composure','concentration','decisions','off_the_ball','positioning','vision','work_rate'],
+  'Фізичні':  ['acceleration','agility','jumping_reach','pace','stamina','strength'],
 };
 const GK_GROUPS = {
-  Goalkeeping: ['handling','reflexes','aerial_reach','one_on_ones','kicking','command_of_area','communication','rushing_out'],
-  Mental:      ['anticipation','composure','concentration','decisions','off_the_ball','positioning','vision','work_rate'],
-  Physical:    ['acceleration','agility','jumping_reach','pace','stamina','strength'],
+  'Воротарські':['handling','reflexes','aerial_reach','one_on_ones','kicking','command_of_area','communication','rushing_out'],
+  'Ментальні':  ['anticipation','composure','concentration','decisions','off_the_ball','positioning','vision','work_rate'],
+  'Фізичні':    ['acceleration','agility','jumping_reach','pace','stamina','strength'],
 };
 
 function openPlayerModal(p) {
@@ -166,11 +166,12 @@ function openPlayerModal(p) {
   el('#pm-name').textContent = p.name;
   const roleInfo = p.role_kind && ROLES[p.role_kind];
   const roleLabel = roleInfo ? roleInfo.label : p.role;
-  const dutyLabel = p.duty ? p.duty[0].toUpperCase() + p.duty.slice(1) : '';
+  const DUTY_UA = { defend: 'Захист', support: 'Підтримка', attack: 'Атака' };
+  const dutyLabel = p.duty ? (DUTY_UA[p.duty] || p.duty) : '';
   // S32: append live morale + fitness state next to the role/duty.
   const moraleVal = Math.round(p.state?.morale ?? 65);
   const fitnessVal = Math.round(p.state?.fitness ?? 100);
-  const stateLine = `${p.role} · ${roleLabel}${dutyLabel ? ' · ' + dutyLabel : ''}  ·  Morale ${moraleVal}  ·  Fit ${fitnessVal}`;
+  const stateLine = `${p.role} · ${roleLabel}${dutyLabel ? ' · ' + dutyLabel : ''}  ·  Настрій ${moraleVal}  ·  Форма ${fitnessVal}`;
   el('#pm-meta').textContent = stateLine;
   el('#pm-meta').title = roleInfo?.desc || '';
   el('#pm-ovr').textContent = playerOverall(p);
@@ -243,7 +244,7 @@ function renderLineupPitch(pitchSel, benchSel, state, swapSel, rerender) {
   if (swapSel.pitchNum != null) {
     const hint = document.createElement('div');
     hint.className = 'swap-hint';
-    hint.textContent = 'Now click a bench player to swap them in.';
+    hint.textContent = 'Тепер клікни на гравця з лави, щоб поставити його на поле.';
     pitch.appendChild(hint);
   }
 
@@ -327,12 +328,15 @@ export class MatchScreenUI {
       });
     }
 
-    // Sprint UI redesign: tactics modal open/close
+    // Sprint UI redesign: tactics modal open/close.
+    // Backdrop close uses mousedown+mouseup tracking so an accidental drag
+    // from inside (e.g. on a <select>) to outside doesn't close the modal.
     const tacBtn = el('#m-tactics-btn');
     const tacClose = el('#m-tactics-close');
     const modal = el('#m-tactics-modal');
     if (tacBtn && modal) {
-      tacBtn.addEventListener('click', () => {
+      tacBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
         modal.classList.remove('hidden');
         this.refreshTactics();
         this.refreshSubs();
@@ -340,11 +344,21 @@ export class MatchScreenUI {
       });
     }
     if (tacClose && modal) {
-      tacClose.addEventListener('click', () => modal.classList.add('hidden'));
+      tacClose.addEventListener('click', (e) => {
+        e.stopPropagation();
+        modal.classList.add('hidden');
+      });
     }
     if (modal) {
+      let backdropDown = false;
+      modal.addEventListener('mousedown', (e) => {
+        backdropDown = (e.target === modal);
+      });
       modal.addEventListener('click', (e) => {
-        if (e.target === modal) modal.classList.add('hidden');
+        if (e.target === modal && backdropDown) {
+          modal.classList.add('hidden');
+        }
+        backdropDown = false;
       });
     }
   }
@@ -366,7 +380,7 @@ export class MatchScreenUI {
         this.refreshSubs();
         this.refreshSubFooter();
       } else {
-        alert('Sub failed: ' + r.reason);
+        alert('Заміна не вдалася: ' + r.reason);
       }
     });
   }
@@ -411,9 +425,9 @@ export class MatchScreenUI {
     if (change) {
       const lagSec = change.applyAt - change.submittedAt;
       const lagMin = (lagSec / 60).toFixed(1);
-      flash(el('#m-apply'), 'Queued ' + (this.engine.phase === 'halftime' ? '(halftime — instant on 2nd half kickoff)' : `— applies in ${lagMin}'`));
+      flash(el('#m-apply'), 'У черзі ' + (this.engine.phase === 'halftime' ? '(перерва — застосується на 2-му таймі)' : `— застосується через ${lagMin}'`));
     } else {
-      flash(el('#m-apply'), 'No change.');
+      flash(el('#m-apply'), 'Без змін.');
     }
   }
 
@@ -661,14 +675,14 @@ export class MatchScreenUI {
     halo.setAttribute('id', 'm-ball-halo');
     halo.setAttribute('cx', '52.5');
     halo.setAttribute('cy', '34');
-    halo.setAttribute('r', '2.7');
+    halo.setAttribute('r', '2.0');
     svg.appendChild(halo);
     const ball = document.createElementNS(ns, 'circle');
     ball.setAttribute('class', 'ball-c');
     ball.setAttribute('id', 'm-ball');
     ball.setAttribute('cx', '52.5');
     ball.setAttribute('cy', '34');
-    ball.setAttribute('r', '1.215');
+    ball.setAttribute('r', '0.91');
     svg.appendChild(ball);
   }
 
@@ -688,10 +702,10 @@ export class MatchScreenUI {
     const m = Math.floor(displayTime / 60);
     const s = Math.floor(displayTime % 60);
     el('#m-clock').textContent = `${pad2(m)}:${pad2(s)}`;
-    let phase = '1st half';
-    if (e.phase === 'halftime') phase = `Half time — ${e.halftimeRemaining}s`;
-    else if (e.phase === 'second') phase = '2nd half';
-    else if (e.phase === 'full') phase = 'Full time';
+    let phase = '1-й тайм';
+    if (e.phase === 'halftime') phase = `Перерва — ${e.halftimeRemaining}с`;
+    else if (e.phase === 'second') phase = '2-й тайм';
+    else if (e.phase === 'full') phase = 'Кінець матчу';
     el('#m-phase').textContent = phase;
   }
 
@@ -729,18 +743,18 @@ export class MatchScreenUI {
     // Sprint UI redesign: per-team stat blocks instead of unified table.
     const s = this.engine.getStats();
     const labels = [
-      ['possession', 'Possession', v => `${v}%`],
-      ['shots', 'Shots', v => v],
-      ['onTarget', 'On target', v => v],
+      ['possession', 'Володіння', v => `${v}%`],
+      ['shots', 'Удари', v => v],
+      ['onTarget', 'У ціль', v => v],
       ['xg', 'xG', v => (typeof v === 'number' ? v.toFixed(2) : v)],
-      ['passes', 'Passes', v => v],
-      ['passAcc', 'Pass %', v => v != null ? `${v}%` : '—'],
-      ['fouls', 'Fouls', v => v],
-      ['corners', 'Corners', v => v],
-      ['tackles', 'Tackles', v => v],
-      ['offsides', '🚩 Offsides', v => v],
-      ['yellows', '🟨 Yellows', v => v],
-      ['reds', '🟥 Reds', v => v],
+      ['passes', 'Передачі', v => v],
+      ['passAcc', 'Точність пасу', v => v != null ? `${v}%` : '—'],
+      ['fouls', 'Фоли', v => v],
+      ['corners', 'Кутові', v => v],
+      ['tackles', 'Відбори', v => v],
+      ['offsides', '🚩 Офсайди', v => v],
+      ['yellows', '🟨 Жовті', v => v],
+      ['reds', '🟥 Червоні', v => v],
     ];
     for (const side of ['home', 'away']) {
       const node = el(`#m-${side}-stats-block`);
@@ -803,7 +817,7 @@ export class MatchScreenUI {
     node.innerHTML = '';
     const mine = this.engine.pendingChanges.filter(c => c.side === 'home');
     if (!mine.length) {
-      node.innerHTML = '<span class="muted small">No pending tactical changes.</span>';
+      node.innerHTML = '<span class="muted small">Немає тактичних змін у черзі.</span>';
       return;
     }
     for (const c of mine) {
@@ -812,7 +826,7 @@ export class MatchScreenUI {
       const remaining = Math.max(0, c.applyAt - this.engine.gameTime);
       const m = Math.floor(remaining / 60);
       const s = Math.floor(remaining % 60);
-      div.textContent = `Queued: ${describePayload(c.payload)} — applies in ${pad2(m)}:${pad2(s)} game time`;
+      div.textContent = `У черзі: ${describePayload(c.payload)} — застосується через ${pad2(m)}:${pad2(s)} ігрового часу`;
       node.appendChild(div);
     }
   }
@@ -821,7 +835,7 @@ export class MatchScreenUI {
     const t = this.engine.teams.away.tactics;
     el('#ai-form').textContent = t.formation;
     const m = parseInt(t.mentality, 10);
-    el('#ai-ment').textContent = ['Very defensive','Defensive','Balanced','Attacking','Very attacking'][m + 2];
+    el('#ai-ment').textContent = ['Дуже оборонна','Оборонна','Збалансована','Атакуюча','Дуже атакуюча'][m + 2];
   }
 
   refreshHighlights() {
@@ -881,13 +895,13 @@ export class MatchScreenUI {
     const inP = team.bench.find(p => p.num === this.subSel.in);
     el('#m-sub-out').textContent = out ? `${out.num} ${shortName(out.name)}` : '—';
     el('#m-sub-in').textContent = inP ? `${inP.num} ${shortName(inP.name)}` : '—';
-    el('#m-subs-left').textContent = `(${this.engine.maxSubs - this.engine.subsUsed.home} of ${this.engine.maxSubs} subs left)`;
+    el('#m-subs-left').textContent = `(залишилось ${this.engine.maxSubs - this.engine.subsUsed.home} з ${this.engine.maxSubs} замін)`;
     el('#m-sub-confirm').disabled = !(out && inP) || this.engine.subsUsed.home >= this.engine.maxSubs;
   }
 
   togglePause() {
     this.engine._paused = !this.engine._paused;
-    el('#m-pause').textContent = this.engine._paused ? 'Resume' : 'Pause';
+    el('#m-pause').textContent = this.engine._paused ? 'Продовжити' : 'Пауза';
   }
 
   checkFulltime() {
@@ -1365,14 +1379,14 @@ function flash(node, msg) {
 
 function describePayload(payload) {
   const parts = [];
-  if (payload.formation) parts.push(`form:${payload.formation}`);
-  if (payload.mentality !== undefined) parts.push(`ment:${payload.mentality}`);
-  if (payload.tempo) parts.push(`tempo:${payload.tempo}`);
-  if (payload.pressHeight) parts.push(`PH:${payload.pressHeight}`);
-  if (payload.pressInt) parts.push(`PI:${payload.pressInt}`);
-  if (payload.defLine) parts.push(`DL:${payload.defLine}`);
-  if (payload.width) parts.push(`W:${payload.width}`);
-  if (payload.passing) parts.push(`pass:${payload.passing}`);
+  if (payload.formation) parts.push(`схема:${payload.formation}`);
+  if (payload.mentality !== undefined) parts.push(`мент:${payload.mentality}`);
+  if (payload.tempo) parts.push(`темп:${payload.tempo}`);
+  if (payload.pressHeight) parts.push(`ВП:${payload.pressHeight}`);
+  if (payload.pressInt) parts.push(`ІП:${payload.pressInt}`);
+  if (payload.defLine) parts.push(`ЛЗ:${payload.defLine}`);
+  if (payload.width) parts.push(`Ш:${payload.width}`);
+  if (payload.passing) parts.push(`пас:${payload.passing}`);
   return parts.join(' · ');
 }
 
