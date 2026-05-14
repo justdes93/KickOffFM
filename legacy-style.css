@@ -276,6 +276,16 @@ button.ghost { background: transparent; }
 .player-modal-header .meta { color: var(--muted); font-size: 13px; }
 .player-modal-header .ovr-big { font-size: 22px; font-weight: 700; color: #6ce58a; margin-left: auto; padding-right: 12px; }
 .player-attrs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.pm-meta-line {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 10px; margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 12px;
+}
+.pm-ovr-pill {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.pm-ovr-pill b { color: #93c5fd; font-size: 14px; margin-left: 4px; }
 .attr-group h3 { font-size: 11px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
 .attr-row { display: grid; grid-template-columns: 1fr 60px 26px; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
 .attr-row .attr-name { color: #cbd3df; }
@@ -285,6 +295,32 @@ button.ghost { background: transparent; }
 .attr-bar-fill { height: 100%; background: linear-gradient(90deg, #4f8cff, #6ce58a); transition: width 0.2s; }
 .attr-row.best .attr-bar-fill { background: #6ce58a; }
 .attr-row.worst .attr-bar-fill { background: #ff7676; }
+
+/* S81: per-player action breakdown rows in player modal */
+.act-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 0; font-size: 12px; color: #cbd3df;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.act-row .num { font-variant-numeric: tabular-nums; font-weight: 600; }
+.act-row.total {
+  font-size: 13px; padding: 6px 0; margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+.act-row.total .num { color: #93c5fd; }
+
+/* S82: heat map */
+.heatmap-col { grid-column: 1 / -1; min-width: 280px; }
+.heatmap-svg {
+  width: 100%; max-width: 360px; display: block;
+  margin-top: 4px; border-radius: 4px;
+}
+.heatmap-svg .hm-pitch { fill: #1f5e30; }
+.heatmap-svg .hm-line { stroke: rgba(255,255,255,0.55); stroke-width: 0.22; fill: none; }
+
+/* S82: squad rows clickable in live match — open player modal */
+.squad-row.clickable { cursor: pointer; transition: background 0.1s; }
+.squad-row.clickable:hover { background: rgba(255,255,255,0.04); }
 .attr-row .attr-val { text-align: right; color: #e0e6ee; font-variant-numeric: tabular-nums; }
 .roster .player { cursor: pointer; transition: background 0.1s; }
 .roster .player:hover { background: rgba(79, 140, 255, 0.10); }

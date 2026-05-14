@@ -98,8 +98,11 @@ export async function runFixture(fixture, opts = {}) {
   return {
     homeScore: e.score.home,
     awayScore: e.score.away,
-    stats: e.stats,
+    stats: e.getStats(),             // S80: include defense/pressing vectors + possession + passAcc
     goalsList: e.goalsList || [],
+    shots: e.shots || [],            // S79: rich per-shot log
+    positionsLog: e.positionsLog || {}, // S82: heat-map data
+    playersStats: e.getPlayerStats(),   // S82b: per-player end-state for post-match modal
     finalEngine: e,
     seed,
     formationH, formationA,
@@ -145,6 +148,9 @@ export async function executeFixture(fixtureId, opts = {}) {
       homeScore: out.homeScore, awayScore: out.awayScore,
       stats: out.stats,
       goals: out.goalsList,
+      shots: out.shots,           // S79
+      positionsLog: out.positionsLog,  // S82
+      playersStats: out.playersStats,  // S82b
       tacticsHome: out.finalEngine.teams.home.tactics,
       tacticsAway: out.finalEngine.teams.away.tactics,
       finishedAt: new Date(),
@@ -203,8 +209,14 @@ export async function resimulateFriendly(friendlyId, opts = {}) {
     fr.awayScore = out.awayScore;
     fr.stats = out.stats;
     fr.goals = out.goalsList;
+    fr.shots = out.shots;          // S79
+    fr.positionsLog = out.positionsLog;  // S82
+    fr.playersStats = out.playersStats;  // S82b
     fr.markModified('goals');
     fr.markModified('stats');
+    fr.markModified('shots');
+    fr.markModified('positionsLog');
+    fr.markModified('playersStats');
     await fr.save();
     log.info?.(`[match] friendly ${fr._id} re-simulated — ${out.homeScore}-${out.awayScore} (${(fr.liveCommands || []).length} commands)`);
     return { ok: true };
@@ -238,12 +250,18 @@ export async function executeFriendly(friendlyId, opts = {}) {
     fr.awayScore = out.awayScore;
     fr.stats = out.stats;
     fr.goals = out.goalsList;
+    fr.shots = out.shots;          // S79
+    fr.positionsLog = out.positionsLog;  // S82
+    fr.playersStats = out.playersStats;  // S82b
     fr.rngSeed = out.seed;
     fr.workerId = null;
     // S62 safety: Mongoose can miss change-detection on Mixed paths when the
     // array reference is replaced. markModified guarantees both fields write.
     fr.markModified('goals');
     fr.markModified('stats');
+    fr.markModified('shots');
+    fr.markModified('positionsLog');
+    fr.markModified('playersStats');
     await fr.save();
     log.info?.(`[match] friendly ${fr._id} simulated — final ${out.homeScore}-${out.awayScore} (revealing over wall-clock)`);
     return { friendlyId: fr._id, homeScore: out.homeScore, awayScore: out.awayScore };

@@ -108,6 +108,10 @@ function renderRoster(sel, team) {
 
 // =============== PLAYER ATTRIBUTE MODAL (S26) ===============
 
+// S82: most recently mounted MatchScreenUI's engine, so openPlayerModal can
+// look up positionsLog for the heat map without threading engine through args.
+let _currentMatchEngine = null;
+
 const ATTR_META = {
   // Outfield Technical
   dribbling:    { label: 'Дриблінг',         desc: 'Обігрування суперника 1-в-1 з мʼячем.' },
@@ -203,7 +207,99 @@ function openPlayerModal(p) {
     grid.appendChild(col);
   }
 
+  // S81: per-player action breakdown (live in-match totals). Skip if zero
+  // activity (e.g. bench player who never touched the ball).
+  const a = p.state?.actions;
+  if (a) {
+    const total = a.passes + a.crosses + a.throughBalls + a.dribbles
+                + a.tacklesAttempted + a.shotsTaken + a.clears
+                + a.interceptions + a.blocks + a.headersWon;
+    if (total > 0) {
+      const completed = a.passesCompleted + a.crossesCompleted + a.throughBallsCompleted
+                      + a.dribblesCompleted + a.tackles + a.shotsOnTarget;
+      const attemptedDuel = a.passes + a.crosses + a.throughBalls + a.dribbles
+                          + a.tacklesAttempted + a.shotsTaken;
+      const errPct = attemptedDuel > 0 ? Math.round((attemptedDuel - completed) / attemptedDuel * 100) : 0;
+      const passRow = (label, made, total) => total > 0
+        ? `<div class="act-row"><span>${label}</span><span class="num">${made}/${total} <span class="muted small">(${Math.round(made/total*100)}%)</span></span></div>`
+        : '';
+      const single = (label, n) => n > 0
+        ? `<div class="act-row"><span>${label}</span><span class="num">${n}</span></div>`
+        : '';
+      const actCol = document.createElement('div');
+      actCol.className = 'attr-group';
+      actCol.innerHTML = `
+        <h3>Дії в матчі</h3>
+        <div class="act-row total"><span>ТТД</span><span class="num">${total} <span class="muted small">(брак ${errPct}%)</span></span></div>
+        ${passRow('Передачі', a.passesCompleted, a.passes)}
+        ${passRow('Навіси', a.crossesCompleted, a.crosses)}
+        ${passRow('Розрізні', a.throughBallsCompleted, a.throughBalls)}
+        ${passRow('Дриблінг', a.dribblesCompleted, a.dribbles)}
+        ${passRow('Відбори', a.tackles, a.tacklesAttempted)}
+        ${passRow('Удари у ціль', a.shotsOnTarget, a.shotsTaken)}
+        ${single('Перехоплення', a.interceptions)}
+        ${single('Блоки', a.blocks)}
+        ${single('Вибивання', a.clears)}
+        ${single('Виграно голов.', a.headersWon)}
+      `;
+      grid.appendChild(actCol);
+    }
+  }
+
+  // S82: per-player heatmap. Read samples from the current MatchScreenUI's
+  // engine (set on construction). Falls back to player.positionsLog if a
+  // server-provided log is attached (post-match flow).
+  const log = _currentMatchEngine?.positionsLog || p.positionsLog;
+  if (log) {
+    const key = `${p.side}-${p.num}`;
+    const points = Array.isArray(log) ? log : log[key];
+    if (Array.isArray(points) && points.length >= 5) {
+      const hmCol = document.createElement('div');
+      hmCol.className = 'attr-group heatmap-col';
+      hmCol.innerHTML = `<h3>Теплова карта</h3>${renderHeatmapSvg(points)}`;
+      grid.appendChild(hmCol);
+    }
+  }
+
   modal.classList.remove('hidden');
+}
+
+// S82: render a heat-map of position samples on a small pitch SVG.
+// Bins points into a 21×14 grid (5m × ~4.86m cells), normalises by max count,
+// and draws translucent rects coloured by density.
+function renderHeatmapSvg(points) {
+  const GX = 21, GY = 14;
+  const grid = new Array(GX * GY).fill(0);
+  for (const pt of points) {
+    if (typeof pt.x !== 'number' || typeof pt.y !== 'number') continue;
+    const gx = Math.min(GX - 1, Math.max(0, Math.floor(pt.x / 105 * GX)));
+    const gy = Math.min(GY - 1, Math.max(0, Math.floor(pt.y / 68 * GY)));
+    grid[gy * GX + gx]++;
+  }
+  const maxCount = Math.max(1, ...grid);
+  const cellW = 105 / GX, cellH = 68 / GY;
+  let cells = '';
+  for (let gy = 0; gy < GY; gy++) {
+    for (let gx = 0; gx < GX; gx++) {
+      const c = grid[gy * GX + gx];
+      if (c === 0) continue;
+      const intensity = c / maxCount;             // 0..1
+      // Color ramp: cool blue → green → yellow → red
+      const hue = 220 - intensity * 220;          // 220 (blue) → 0 (red)
+      const alpha = 0.18 + intensity * 0.55;
+      cells += `<rect x="${gx * cellW}" y="${gy * cellH}" width="${cellW}" height="${cellH}" fill="hsl(${hue.toFixed(0)},90%,55%)" fill-opacity="${alpha.toFixed(2)}"/>`;
+    }
+  }
+  return `
+    <svg class="heatmap-svg" viewBox="-2 -1 109 70" preserveAspectRatio="xMidYMid meet">
+      <rect class="hm-pitch" x="0" y="0" width="105" height="68"/>
+      <line class="hm-line" x1="52.5" y1="0" x2="52.5" y2="68"/>
+      <circle class="hm-line" cx="52.5" cy="34" r="9.15" fill="none"/>
+      <rect class="hm-line" x="0" y="13.84" width="16.5" height="40.32" fill="none"/>
+      <rect class="hm-line" x="88.5" y="13.84" width="16.5" height="40.32" fill="none"/>
+      ${cells}
+    </svg>
+  `;
 }
 
 function bindPlayerModal() {
@@ -288,6 +384,7 @@ export class MatchScreenUI {
     this.onQuit = onQuit;
     this.subSel = { out: null, in: null };
     this.lastEventCount = 0;
+    _currentMatchEngine = engine;          // S82: expose for player-modal heatmap
 
     // Continuous interpolation state
     this.playerPos = {};            // id -> { x, y }
@@ -753,6 +850,12 @@ export class MatchScreenUI {
       ['corners', 'Кутові', v => v],
       ['tackles', 'Відбори', v => v],
       ['offsides', '🚩 Офсайди', v => v],
+      // S81: TTD + error % live
+      ['ttd', 'ТТД', v => v != null ? v : '—'],
+      ['ttdErrorPct', 'Брак ТТД', v => v != null ? `${v}%` : '—'],
+      // S80: vectors live
+      ['defenseVector', 'Вектор оборони', v => v != null ? (v > 0 ? '+' + v : v) : '—'],
+      ['pressingVector', 'Вектор пресингу', v => v != null ? (v > 0 ? '+' + v : v) : '—'],
       ['yellows', '🟨 Жовті', v => v],
       ['reds', '🟥 Червоні', v => v],
     ];
@@ -782,9 +885,10 @@ export class MatchScreenUI {
         const assistIcons = (p.state.assists || 0) > 0 ? '🅰'.repeat(p.state.assists) : '';
         const cardIcon = p.state.sentOff ? '🟥' : ((p.state.yellow || 0) > 0 ? '🟨' : '');
         const icons = goalIcons + assistIcons + cardIcon;
-        const cls = 'squad-row' + (tired ? ' tired' : '') + (p.state.sentOff ? ' sentoff' : '');
+        const cls = 'squad-row clickable' + (tired ? ' tired' : '') + (p.state.sentOff ? ' sentoff' : '');
+        // S81/S82: data-key so click handler can resolve back to player + open modal
         rows.push(`
-          <div class="${cls}">
+          <div class="${cls}" data-side="${side}" data-num="${p.num}">
             <span class="num">${p.num}</span>
             <span class="name">${shortName(p.name)}</span>
             <span class="icons">${icons}</span>
@@ -793,6 +897,19 @@ export class MatchScreenUI {
           </div>`);
       }
       node.innerHTML = rows.join('');
+      if (!node._bound) {
+        node._bound = true;
+        node.addEventListener('click', (ev) => {
+          const row = ev.target.closest('.squad-row');
+          if (!row) return;
+          const sd = row.getAttribute('data-side');
+          const num = parseInt(row.getAttribute('data-num'), 10);
+          const t = this.engine.teams[sd];
+          if (!t) return;
+          const player = t.onPitch.find(x => x.num === num);
+          if (player) openPlayerModal(player);
+        });
+      }
     }
   }
 

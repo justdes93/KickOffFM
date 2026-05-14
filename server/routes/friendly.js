@@ -13,8 +13,8 @@
 //
 // Pace: friendlies use halfLenSec=600 (20-min total).
 
-import { Friendly, Team, User, Player } from '../db/models/index.js';
-import { pickRole, ROLES as ROLE_DEFS } from '../../data.js';
+import { Friendly, Team, User, Player, League } from '../db/models/index.js';
+import { pickRole, ROLES as ROLE_DEFS, playerOverall } from '../../data.js';
 import { resimulateFriendly } from '../services/matchRunner.js';
 
 const INVITE_WINDOW_MS = 5 * 60 * 1000;         // 5 min for opponent to respond (S59)
@@ -507,5 +507,60 @@ export default async function friendlyRoutes(app) {
     }
 
     return { friendly: f, home, away };
+  });
+
+  // S83: pre-match compare — per-team aggregates of the squad for the
+  // friendly-wait page. Returns squad strength, avg overall, avg age,
+  // foreigners count, formation, mentality, best player.
+  app.get('/api/friendlies/:id/compare', async (req, reply) => {
+    if (!dbReady(app, reply)) return;
+    let f;
+    try { f = await Friendly.findById(req.params.id).lean(); }
+    catch { return reply.code(400).send({ error: 'invalid_id' }); }
+    if (!f) return reply.code(404).send({ error: 'friendly_not_found' });
+
+    const teamCompare = async (teamId, tacticsOverride) => {
+      const team = await Team.findById(teamId).lean();
+      if (!team) return null;
+      const players = await Player.find({ teamId, transferLocked: { $ne: true } }).lean();
+      const league = team.leagueId ? await League.findById(team.leagueId).select('country name slug').lean() : null;
+      const country = league?.country || 'EN';
+      // Best XI by overall (engine uses a more complex lineup picker, but for
+      // a pre-match preview, sum of top 11 overalls is a fair proxy).
+      const sorted = [...players].sort((a, b) => playerOverall(b) - playerOverall(a));
+      const xi = sorted.slice(0, 11);
+      const ovrs = xi.map(playerOverall);
+      const squadStrength = ovrs.reduce((s, v) => s + v, 0);
+      const avgOverall = Math.round(squadStrength / Math.max(1, ovrs.length));
+      const ages = xi.map(p => p.age || 24);
+      const avgAge = Math.round(ages.reduce((s, v) => s + v, 0) / Math.max(1, ages.length) * 10) / 10;
+      const foreigners = xi.filter(p => p.nationality && p.nationality !== country).length;
+      const tactics = tacticsOverride || team.tactics || {};
+      const best = sorted[0] ? { name: sorted[0].name, ovr: playerOverall(sorted[0]), role: sorted[0].role } : null;
+      let managerName = null;
+      if (team.managerUserId) {
+        const u = await User.findById(team.managerUserId).select('username').lean();
+        managerName = u?.username || null;
+      }
+      return {
+        teamId: team._id,
+        name: team.name,
+        short: team.short,
+        leagueName: league?.name || null,
+        squadStrength,
+        avgOverall,
+        avgAge,
+        foreigners,
+        squadSize: players.length,
+        formation: tactics.formation || '4-3-3',
+        mentality: tactics.mentality ?? '0',
+        manager: managerName,
+        bestPlayer: best,
+      };
+    };
+
+    const home = await teamCompare(f.homeTeamId, f.homeTacticsOverride);
+    const away = await teamCompare(f.awayTeamId, f.awayTacticsOverride);
+    return { home, away };
   });
 }

@@ -211,7 +211,25 @@ function clonePlayer(p) {
   return {
     ...p,
     attrs: { ...p.attrs },
-    state: { fitness: 100, fatigue: 0, morale: 65, yellow: 0, sentOff: false, goals: 0, assists: 0 },
+    state: {
+      fitness: 100, fatigue: 0, morale: 65, yellow: 0, sentOff: false,
+      goals: 0, assists: 0, pressure: 0,
+      // S81: per-player on-ball action counters (TTD breakdown). Each counter
+      // increments when the action is taken; the *Completed pair increments on
+      // success only. Team TTD = sum of all; team error% = (taken - completed) / taken.
+      actions: {
+        passes: 0, passesCompleted: 0,
+        crosses: 0, crossesCompleted: 0,
+        throughBalls: 0, throughBallsCompleted: 0,
+        dribbles: 0, dribblesCompleted: 0,
+        tackles: 0, tacklesAttempted: 0,
+        interceptions: 0,
+        blocks: 0,
+        shotsTaken: 0, shotsOnTarget: 0,
+        clears: 0,
+        headersWon: 0, headersLost: 0,
+      },
+    },
     x: 52.5, y: 34, vx: 0, vy: 0, facing: 0,
     targetX: 52.5, targetY: 34,
     anchor: { x: 52.5, y: 34 },
@@ -304,6 +322,18 @@ export class MatchEngine {
 
     // UI redesign: persistent goal list (events array is FIFO-trimmed, this is not).
     this.goalsList = [];
+    // S79: rich per-shot log (one entry per shot taken). Each entry filled in
+    // at fire time with shooter+geometry+xG+pressure, then `result` is set
+    // when the shot resolves (goal / saved / post / off_target / blocked).
+    this.shots = [];
+    // S80: per-team running aggregates of ball-recovery X positions. Used to
+    // compute `defenseVector` (avg recovery X, normalised to attack dir) and
+    // `pressingVector` (% of recoveries in opp half). Mapped to −100..+100.
+    this._recoveryX = { home: [], away: [] };
+    // S82: position samples for heat maps. Key = `${side}-${playerNum}`.
+    // Sampled every 30 ticks (3 game-sec). ~1800 samples/player for full match
+    // → ~30 KB per player as plain {x,y} pairs.
+    this.positionsLog = {};
 
     // Sprint 17: unified pause foundation. All non-instant restarts (goal, card,
     // sub, injury, VAR, half-time, corner/FK/penalty in future) flow through
@@ -1155,6 +1185,19 @@ export class MatchEngine {
     this.tickCount++;
     // S64: snapshot ball position into rolling history for per-player lag sampling.
     this.ballHistory[this.tickCount % this.ballHistory.length] = { x: this.ball.x, y: this.ball.y };
+    // S82: sample positions every 60 ticks (~6 game-sec) for heat-map rendering.
+    // Integers — 21×14 grid means sub-meter precision is wasted. Storage:
+    // ~22 players × 900 samples × ~14 bytes JSON ≈ 280 KB / match.
+    if (this.tickCount % 60 === 0) {
+      for (const side of ['home', 'away']) {
+        for (const p of this.teams[side].onPitch) {
+          if (p.state.sentOff) continue;
+          const key = `${side}-${p.num}`;
+          if (!this.positionsLog[key]) this.positionsLog[key] = [];
+          this.positionsLog[key].push({ x: Math.round(p.x), y: Math.round(p.y) });
+        }
+      }
+    }
 
     // Set piece in progress — scripted positioning + delivery overrides normal AI.
     if (this.setPiece) {
@@ -1814,6 +1857,7 @@ export class MatchEngine {
         p.actionTimer = 8;
         p._dribbleTargetX = best.toX;
         p._dribbleTargetY = best.toY;
+        if (p?.state?.actions) p.state.actions.dribbles++;   // S81 — attempted
         break;
       case 'CROSS':
         p.action = 'CROSS';
@@ -2377,6 +2421,10 @@ export class MatchEngine {
       const pressure = Math.max(0, 1 - minOppDist / 3.5);       // 0..1, 1 = opp right on shooter
       const compR = (p.attrs?.composure ?? 65);
       const composureFactor = (75 - compR) / 100;               // negative for elite (>75), positive for poor
+      // S78: shooter's accumulated pressure (from previous pass / receive) adds
+      // directly to the miss probability. A 35% inherited-pressure shot adds
+      // +14 % wide-miss chance.
+      const inheritedPressureFactor = (p.state.pressure || 0) / 100;  // 0..0.5
       // Distance gate — close-range shots should be FAR more accurate. A
       // striker 8m out shouldn't blast 15m wide of an open goal. Scales the
       // wide-miss probability and the wide-miss magnitude down for close shots.
@@ -2389,7 +2437,8 @@ export class MatchEngine {
         Math.max(0, distGoal - 8) * 0.022 +
         (90 - sR) * 0.005 +
         pressure * 0.30 +
-        Math.max(0, composureFactor) * 0.5
+        Math.max(0, composureFactor) * 0.5 +
+        inheritedPressureFactor * 0.40                          // S78: carried pressure
         ) * distFactor
       );
       let aimAdjY = 0;
@@ -2420,16 +2469,21 @@ export class MatchEngine {
       this.lastPossessionChange = this.tickCount;
 
       const xGEst = this.utilityShoot(p).xG || 0.05;
+      const oppTeam2 = this.teams[other(p.side)];
+      const gk2 = oppTeam2.onPitch.find(pl => pl.role === 'GK' && !pl.state.sentOff);
+      const shotIdx = this._logShot({ p, distGoal, xG: xGEst, shotType: 'foot', gkName: gk2?.name });
       this.ball.pendingShot = {
         fromSide: p.side, fromNum: p.num,
         kickTick: this.tickCount,
         xG: xGEst,
         distGoal,
         shooterName: p.name,
+        shotIdx,
       };
       this.ball.pendingPass = null;
       this.stats[p.side].shots++;
       this.stats[p.side].xg += xGEst;
+      if (p?.state?.actions) p.state.actions.shotsTaken++;   // S81
       this._detectChanceCreatedAndKeyPass(this.ball.pendingShot);
       this.log({
         type: 'shot', side: p.side,
@@ -2437,6 +2491,47 @@ export class MatchEngine {
       });
       p.action = 'IDLE';
     }
+  }
+
+  // S80: log a successful ball-recovery (tackle / interception / loose-ball
+  // win) for the team-vector accumulators. X position is normalised at
+  // getStats() time relative to the team's attacking direction.
+  _logRecovery(side, x) {
+    if (!this._recoveryX[side]) return;
+    this._recoveryX[side].push(x);
+  }
+
+  // S79: log a shot record and return its index. The caller stores the index
+  // on `ball.pendingShot.shotIdx`; the resolution paths (goal, save, post,
+  // off-target, blocked) look it up and set `result`. Pressure is captured
+  // BEFORE the shot to reflect "what state the shooter was in".
+  _logShot({ p, distGoal, xG, shotType, gkName }) {
+    const goalX = p.side === 'home' ? 105 : 0;
+    // Angle subtended by the goal mouth from the shooter's position.
+    // Wider = more goal to aim at; narrow = tight angle (corner).
+    const dxToGoal = Math.abs(goalX - p.x);
+    const angleTop = Math.atan2(GOAL_Y_TOP - p.y, dxToGoal);
+    const angleBot = Math.atan2(GOAL_Y_BOT - p.y, dxToGoal);
+    const angleDeg = Math.abs(angleBot - angleTop) * 180 / Math.PI;
+    // GK skill that matters most depends on distance.
+    const gkSkillUsed = distGoal <= 15 ? 'reflexes' : 'positioning';
+    const rec = {
+      time: this.gameTime,
+      side: p.side,
+      shooterName: p.name,
+      shooterNum: p.num,
+      shooterPos: p.role,
+      shotType,
+      distGoal: +distGoal.toFixed(1),
+      angleDeg: +angleDeg.toFixed(1),
+      pressure: Math.round(p.state.pressure || 0),
+      xG: +xG.toFixed(3),
+      gkName: gkName || '—',
+      gkSkillUsed,
+      result: 'pending',
+    };
+    this.shots.push(rec);
+    return this.shots.length - 1;
   }
 
   // Spectacular detectors that fire at the moment the shot is taken (not when it resolves).
@@ -2466,6 +2561,11 @@ export class MatchEngine {
     p.targetY = p._dribbleTargetY;
     this.actMoveToTarget(p, true);
     if (p.actionTimer === 0) {
+      // S81: dribble counted as completed if player still owns the ball when
+      // the action expires (i.e. wasn't tackled/dispossessed during the run).
+      if (this.ball.ownerSide === p.side && this.ball.ownerNum === p.num) {
+        if (p?.state?.actions) p.state.actions.dribblesCompleted++;
+      }
       p.action = 'IDLE';
     }
   }
@@ -2491,12 +2591,16 @@ export class MatchEngine {
       this.ball.lastTouchSide = p.side; this.ball.lastTouchNum = p.num;
       this.ball.inFlight = true;
       this.ball.pendingShot = null;
+      // S78: crosses are high-risk by definition — base difficulty 0.45 + passer pressure
+      const crossDifficulty = clamp(0.45 + (p.state.pressure || 0) / 100 * 0.5, 0, 0.85);
       this.ball.pendingPass = {
         fromSide: p.side, fromNum: p.num,
         targetSide: p.side, targetNum: -1,
         kickTick: this.tickCount, type: 'cross',
+        difficulty: crossDifficulty,
       };
       this.stats[p.side].passes++;
+      p.state.actions.crosses++;         // S81
       this.log({ type: 'event', side: p.side, text: `${p.name} навішує у штрафний.` });
       p.action = 'IDLE';
     }
@@ -2526,12 +2630,16 @@ export class MatchEngine {
       this.ball.pendingShot = null;
       // Spatial offside check at the moment of the pass
       const offside = this.isOffside(p.side, target);
+      // S78: through-balls are high-risk — base 0.5 + passer pressure
+      const throughDifficulty = clamp(0.5 + (p.state.pressure || 0) / 100 * 0.4, 0, 0.85);
       this.ball.pendingPass = {
         fromSide: p.side, fromNum: p.num,
         targetSide: p.side, targetNum: target.num,
         kickTick: this.tickCount, type: 'through', offside,
+        difficulty: throughDifficulty,
       };
       this.stats[p.side].passes++;
+      p.state.actions.throughBalls++;    // S81
       this.log({ type: 'event', side: p.side, text: `${p.name} віддає розрізну на ${target.name}.` });
       p.action = 'IDLE';
     }
@@ -2556,6 +2664,7 @@ export class MatchEngine {
       this.ball.inFlight = true;
       this.ball.pendingShot = null;
       this.ball.pendingPass = null;
+      if (p?.state?.actions) p.state.actions.clears++;   // S81
       this.log({ type: 'event', side: p.side, text: `${p.name} вибиває мʼяч геть.` });
       p.action = 'IDLE';
     }
@@ -2666,6 +2775,9 @@ export class MatchEngine {
       ball.ownerSide = null; ball.ownerNum = null;
       ball.lastTouchSide = p.side; ball.lastTouchNum = p.num;
       this.stats[p.side].tackles++;
+      p.state.actions.tackles++;          // S81
+      p.state.actions.tacklesAttempted++;
+      this._logRecovery(p.side, p.x);   // S80
       this.log({ type: 'event', side: p.side, text: `${p.name} відбирає мʼяч у ${carrier.name}.` });
       // Capture how long the opponent had been in possession BEFORE we reset the marker.
       const oppPossessionTicks = this.tickCount - this.lastPossessionChange;
@@ -2687,6 +2799,7 @@ export class MatchEngine {
       }
     } else {
       // Foul
+      p.state.actions.tacklesAttempted++;   // S81
       this.awardFoul({ fouledSide: carrier.side, foulerSide: p.side, fouler: p, fouled: carrier });
     }
     // Sprint 22: ~1.2% chance of injury after any tackle (clean or foul).
@@ -2712,8 +2825,26 @@ export class MatchEngine {
       const dx = aimX - p.x, dy = aimY - p.y;
       const dxy = Math.hypot(dx, dy);
       const desiredSpeed = clamp(dxy * 1.30, 11, 22);   // 11-22 m/s — paced for receivers
-      // Accuracy noise
-      const accSigma = Math.max(0.05, 0.7 - passRating(p, 'cross') / 120) * (dxy / 25);
+      // S78: pass difficulty — base on distance + passer skill + defender
+      // proximity at target + passer's own pressure. Stored on pendingPass so
+      // controlBall can pass it to the receiver as their inherited pressure.
+      const passerPressure = p.state.pressure || 0;
+      const distFactor = clamp(dxy / 35, 0.10, 0.85);
+      const passSkill = passRating(p, dxy > 22 ? 'long' : 'short');
+      const skillFactor = clamp(1.2 - passSkill / 100, 0.4, 1.1);
+      let nearestOpp = 99;
+      const oppTeam = this.teams[other(p.side)];
+      for (const o of oppTeam.onPitch) {
+        if (o.state.sentOff) continue;
+        const d = dist(o.x, o.y, aimX, aimY);
+        if (d < nearestOpp) nearestOpp = d;
+      }
+      const oppFactor = nearestOpp < 2 ? 0.25 : nearestOpp < 4 ? 0.15 : 0;
+      const passerPressureFactor = passerPressure / 100;
+      const passDifficulty = clamp(distFactor * skillFactor + oppFactor + passerPressureFactor, 0, 0.90);
+      // Accuracy noise — widens with passer's current pressure (up to +50 %).
+      const baseSigma = Math.max(0.05, 0.7 - passRating(p, 'cross') / 120) * (dxy / 25);
+      const accSigma = baseSigma * (1 + passerPressure / 100);
       const noiseAng = (this.rng() - 0.5) * accSigma;
       const ang = Math.atan2(dy, dx) + noiseAng;
       this.ball.vx = Math.cos(ang) * desiredSpeed;
@@ -2733,9 +2864,11 @@ export class MatchEngine {
         kickTick: this.tickCount,
         type: dxy > 22 ? 'long' : 'short',
         offside: this.isOffside(p.side, target),
+        difficulty: passDifficulty,                       // S78
       };
       this.ball.pendingShot = null;
       this.stats[p.side].passes++;
+      p.state.actions.passes++;          // S81
       this.log({
         type: 'event', side: p.side,
         text: `${p.name} → пас на ${target.name}.`,
@@ -2811,7 +2944,12 @@ export class MatchEngine {
     if (b.z > 1.8) return;            // ball too high to control without header
 
     // Pending shot saved/cleared if too old
-    if (b.pendingShot && this.tickCount - b.pendingShot.kickTick > 60) b.pendingShot = null;
+    if (b.pendingShot && this.tickCount - b.pendingShot.kickTick > 60) {
+      // S79: if the shot expired without being resolved, it counts as off-target.
+      const idx = b.pendingShot.shotIdx;
+      if (idx != null && this.shots[idx]?.result === 'pending') this.shots[idx].result = 'off_target';
+      b.pendingShot = null;
+    }
     // Pending pass cleared if too old (~3 sec)
     if (b.pendingPass && this.tickCount - b.pendingPass.kickTick > 30) {
       // Pass timed out — counted as misplaced
@@ -2847,6 +2985,12 @@ export class MatchEngine {
                               (best.side === 'away' && best.x > 88.3);
         if (best.role !== 'GK' && inOwnPenArea && this.rng() < 0.45) {
           // Defender blocks dangerous fast ball — direct deflection to corner.
+          // S79: mark the originating shot (if any) as blocked.
+          if (b.pendingShot?.shotIdx != null) {
+            const blk = this.shots[b.pendingShot.shotIdx];
+            if (blk && blk.result === 'pending') blk.result = 'blocked';
+          }
+          if (best?.state?.actions) best.state.actions.blocks++;   // S81
           const cornerSide = other(best.side);
           const cornerY = best.y < 34 ? 0.5 : 67.5;
           const cornerX = best.side === 'home' ? 0.5 : 104.5;
@@ -2869,6 +3013,10 @@ export class MatchEngine {
     // Resolve pending pass / shot semantics
     if (b.pendingShot) {
       const ps = b.pendingShot;
+      // S79: shot ended in someone's possession before crossing the goal line.
+      if (ps.shotIdx != null && this.shots[ps.shotIdx]?.result === 'pending') {
+        this.shots[ps.shotIdx].result = best.role === 'GK' && best.side !== ps.fromSide ? 'off_target' : 'off_target';
+      }
       // S64: don't count GK-collects-loose-ball as on-target. "On target" only
       // increments via the checkBoundaries path when ball actually crosses
       // goal line within the mouth (saves, woodwork, goals).
@@ -2919,6 +3067,21 @@ export class MatchEngine {
       if (toSide === pp.fromSide) {
         // Same team controls → pass completed
         this.stats[pp.fromSide].passesCompleted++;
+        // S81: per-player pass completion — find the passer + bump the right counter by pass type
+        const passerActor = this.teams[pp.fromSide].onPitch.find(x => x.num === pp.fromNum);
+        if (passerActor?.state?.actions) {
+          if (pp.type === 'cross') passerActor.state.actions.crossesCompleted++;
+          else if (pp.type === 'through') passerActor.state.actions.throughBallsCompleted++;
+          else passerActor.state.actions.passesCompleted++;
+        }
+        // S78: receiver inherits pressure proportional to the pass difficulty.
+        // Tight, defended passes leave the receiver under more pressure on
+        // their first touch and bias their next action (shoot/dribble) toward
+        // misses. Clean passes pass on almost nothing.
+        if (typeof pp.difficulty === 'number') {
+          const inherited = clamp(pp.difficulty * 50, 0, 50);
+          best.state.pressure = Math.max(best.state.pressure || 0, inherited);
+        }
         // KEY_PASS tracking — if received attacker shoots within next ~3 sec, this assists.
         const passer = this.teams[pp.fromSide].onPitch.find(x => x.num === pp.fromNum);
         this.lastReceivedPass = {
@@ -2946,6 +3109,8 @@ export class MatchEngine {
       } else {
         // Interception by opponent (separate from physical tackles).
         this.stats[toSide].interceptions++;
+        if (best?.state?.actions) best.state.actions.interceptions++;   // S81
+        this._logRecovery(toSide, best.x);   // S80
         this.log({ type: 'event', side: toSide, text: `${best.name} перехоплює.` });
       }
       b.pendingPass = null;
@@ -2953,6 +3118,7 @@ export class MatchEngine {
       // Loose-ball recovery — log but don't count as tackle (real "tackles" stat
       // is reserved for clean slide-tackles + interceptions of attempted passes).
       this.lastPossessionChange = this.tickCount;
+      this._logRecovery(toSide, best.x);   // S80
       this.log({ type: 'event', side: toSide, text: `${best.name} оволодіває мʼячем.` });
     }
 
@@ -3028,11 +3194,15 @@ export class MatchEngine {
           const nearPost = distFromCenterY > 3.0;       // close to a post
           if (nearPost) {
             const ps = b.pendingShot;
+            if (ps.shotIdx != null && this.shots[ps.shotIdx]?.result === 'pending') this.shots[ps.shotIdx].result = 'post';
             this.log({
               type: 'spectacular', side: ps.fromSide, kind: 'WOODWORK',
               text: `🪵 У штангу! ${ps.shooterName} влучає в каркас.`,
             });
             this.stats[ps.fromSide].onTarget++;  // counts as on target
+            // S81: post counts as OT for the shooter
+            const shooter = this.teams[ps.fromSide].onPitch.find(pl => pl.num === ps.fromNum);
+            if (shooter?.state?.actions) shooter.state.actions.shotsOnTarget++;
             // Ball bounces back into play
             b.vx = -b.vx * 0.55;
             b.vy = b.vy * 0.7 + (this.rng() - 0.5) * 4;
@@ -3055,6 +3225,11 @@ export class MatchEngine {
           if (this.rng() < saveProb) {
             this.stats[b.pendingShot.fromSide].onTarget++;
             const ps = b.pendingShot;
+            // S79: shot saved
+            if (ps.shotIdx != null && this.shots[ps.shotIdx]?.result === 'pending') this.shots[ps.shotIdx].result = 'saved';
+            // S81: saved counts as OT for the shooter
+            const shooter = this.teams[ps.fromSide].onPitch.find(pl => pl.num === ps.fromNum);
+            if (shooter?.state?.actions) shooter.state.actions.shotsOnTarget++;
             // BIG_CHANCE_MISSED — high-xG shot that didn't go in
             if (ps.xG >= 0.30) {
               this.log({
@@ -3115,6 +3290,13 @@ export class MatchEngine {
           this.score[scoredBy]++;
           // Spectacular detectors before standard goal log
           const ps = b.pendingShot;
+          // S79: goal resolved
+          if (ps?.shotIdx != null && this.shots[ps.shotIdx]?.result === 'pending') this.shots[ps.shotIdx].result = 'goal';
+          // S81: goal counts as OT for the shooter (if we know who)
+          if (ps?.fromNum != null) {
+            const shooter = this.teams[scoredBy].onPitch.find(pl => pl.num === ps.fromNum);
+            if (shooter?.state?.actions) shooter.state.actions.shotsOnTarget++;
+          }
           if (ps) {
             if (ps.xG < 0.05) {
               this.log({
@@ -3262,6 +3444,12 @@ export class MatchEngine {
         const drain = baseDrain * roleMult * attrMult;
         p.state.fatigue = Math.min(100, p.state.fatigue + drain);
         p.state.fitness = Math.max(0, 100 - p.state.fatigue);
+        // S78: pressure decay — called every 10 ticks (1 game-sec) so 50 %
+        // pressure clears in ~5 game-sec if the player isn't put under
+        // pressure again by a follow-up tight pass.
+        if ((p.state.pressure || 0) > 0) {
+          p.state.pressure = Math.max(0, p.state.pressure - 10);
+        }
       }
     }
   }
@@ -3624,14 +3812,17 @@ export class MatchEngine {
     let xG = 0.78 + (penaltyRating(kicker) - 70) * 0.0025 - ((gk?.attrs.reflexes || 70) - 70) * 0.003;
     xG = clamp(xG, 0.55, 0.92);
     const penDist = Math.abs((sp.side === 'home' ? 105 : 0) - kicker.x);
+    const penShotIdx = this._logShot({ p: kicker, distGoal: penDist, xG, shotType: 'penalty', gkName: gk?.name });
     this.ball.pendingShot = {
       fromSide: sp.side, fromNum: sp.kickerNum,
       kickTick: this.tickCount, xG,
       distGoal: penDist,
       shooterName: kicker.name,
+      shotIdx: penShotIdx,
     };
     this.stats[sp.side].shots++;
     this.stats[sp.side].xg += xG;
+    if (kicker?.state?.actions) kicker.state.actions.shotsTaken++;   // S81
     this._detectChanceCreatedAndKeyPass(this.ball.pendingShot);
     this.log({ type: 'shot', side: sp.side, text: `🎯 ${kicker.name} підходить до мʼяча... xG ${xG.toFixed(2)}.` });
     this.setPiece = null;
@@ -3696,14 +3887,18 @@ export class MatchEngine {
       this.ball.inFlight = true;
       const xGBase = 0.10 * Math.exp(-(distGoal - 18) / 11);
       const xG = clamp(xGBase * (wantLowDrive ? 1.15 : 1.0), 0.02, 0.20);
+      const fkGk = this.teams[other(sp.side)].onPitch.find(pl => pl.role === 'GK' && !pl.state.sentOff);
+      const fkShotIdx = this._logShot({ p: kicker, distGoal, xG, shotType: 'fk', gkName: fkGk?.name });
       this.ball.pendingShot = {
         fromSide: sp.side, fromNum: sp.kickerNum,
         kickTick: this.tickCount, xG,
         distGoal,
         shooterName: kicker.name,
+        shotIdx: fkShotIdx,
       };
       this.stats[sp.side].shots++;
       this.stats[sp.side].xg += xG;
+      if (kicker?.state?.actions) kicker.state.actions.shotsTaken++;   // S81
       this._detectChanceCreatedAndKeyPass(this.ball.pendingShot);
       const verb = wantLowDrive ? 'низом бʼє штрафний' : 'закручує штрафний у ворота';
       this.log({ type: 'shot', side: sp.side, text: `${kicker.name} ${verb}. xG ${xG.toFixed(2)}.` });
@@ -3787,15 +3982,22 @@ export class MatchEngine {
       // Sprint 15: lower header xG cap (was 0.30 → 0.18) to bring conversion in line.
       const xG = clamp(0.06 + (headerRating(winner) - 65) * 0.0020, 0.03, 0.18);
       const headerDist = Math.abs(goalX - winner.x);
+      const headerGk = this.teams[other(winner.side)].onPitch.find(pl => pl.role === 'GK' && !pl.state.sentOff);
+      const headerShotIdx = this._logShot({ p: winner, distGoal: headerDist, xG, shotType: 'head', gkName: headerGk?.name });
       b.pendingShot = {
         fromSide: winner.side, fromNum: winner.num,
         kickTick: this.tickCount, xG,
         distGoal: headerDist,
         shooterName: winner.name,
+        shotIdx: headerShotIdx,
       };
       b.pendingPass = null;
       this.stats[winner.side].shots++;
       this.stats[winner.side].xg += xG;
+      if (winner?.state?.actions) {
+        winner.state.actions.shotsTaken++;        // S81
+        winner.state.actions.headersWon++;
+      }
       this._detectChanceCreatedAndKeyPass(b.pendingShot);
       this.log({ type: 'shot', side: winner.side, text: `🪶 ${winner.name} бʼє головою у ворота! xG ${xG.toFixed(2)}.` });
     } else {
@@ -3813,6 +4015,7 @@ export class MatchEngine {
       b.inFlight = true;
       b.pendingShot = null;
       b.pendingPass = null;
+      if (winner?.state?.actions) winner.state.actions.headersWon++;   // S81
       this.log({ type: 'event', side: winner.side, text: `${winner.name} вибиває головою.` });
     }
     return true;
@@ -4034,19 +4237,101 @@ export class MatchEngine {
   }
 
   // Stats getter
+  // S82b: snapshot of per-player end-of-match data. Used for post-match
+  // player modal — actions, heatmap key, attrs, meta. Lives once match ends
+  // and is persisted to MatchResult / Friendly.playersStats.
+  getPlayerStats() {
+    const out = [];
+    for (const side of ['home', 'away']) {
+      const all = this.teams[side].onPitch.concat(this.teams[side].bench);
+      for (const p of all) {
+        out.push({
+          side,
+          num: p.num,
+          name: p.name,
+          role: p.role,
+          role_kind: p.role_kind,
+          duty: p.duty,
+          attrs: p.attrs,
+          state: {
+            goals: p.state.goals || 0,
+            assists: p.state.assists || 0,
+            morale: Math.round(p.state.morale || 65),
+            fitness: Math.round(p.state.fitness || 100),
+            yellow: p.state.yellow || 0,
+            sentOff: !!p.state.sentOff,
+            actions: { ...p.state.actions },
+          },
+        });
+      }
+    }
+    return out;
+  }
+
   getStats() {
     const s = this.stats;
     const total = Math.max(1, s.home.possessionTicks + s.away.possessionTicks);
+    // S80: compute team-level vectors from recovery-X log. Both vectors are
+    // mapped to −100..+100 and are relative to the team's attacking direction.
+    //   defenseVector  — avg recovery X (high = team wins ball far up the pitch)
+    //   pressingVector — % recoveries in opp half (high = aggressive press)
+    const computeVectors = (side) => {
+      const arr = this._recoveryX[side] || [];
+      if (arr.length === 0) return { defenseVector: 0, pressingVector: 0 };
+      const attackDir = side === 'home' ? 1 : -1;
+      // Anchor at "own 35m line" — empirically the league-average defensive
+      // line so a balanced team comes out near 0 instead of always negative.
+      const anchorX = side === 'home' ? 35 : 70;
+      const avgX = arr.reduce((sum, v) => sum + v, 0) / arr.length;
+      const delta = (avgX - anchorX) * attackDir;          // + = higher up the pitch
+      // Scale: deep-block side has 35m of range, high-block side has 70m.
+      const scale = delta >= 0 ? 70 : 35;
+      const defenseVector = Math.round(clamp(delta / scale * 100, -100, 100));
+      // pressingVector: % of recoveries on opp half. 50/50 = +0, 80/20 = +60.
+      const oppHalf = arr.filter(x => attackDir > 0 ? x > 52.5 : x < 52.5).length;
+      const ratio = oppHalf / arr.length;
+      const pressingVector = Math.round(clamp((ratio - 0.5) * 200, -100, 100));
+      return { defenseVector, pressingVector };
+    };
+    const vH = computeVectors('home');
+    const vA = computeVectors('away');
+    // S81: team TTD = sum of all on-ball actions across the squad; error% =
+    // (attempted - completed) / attempted. Helps you see who's wasteful.
+    const ttdFor = (side) => {
+      let attempted = 0, completed = 0;
+      for (const p of this.teams[side].onPitch.concat(this.teams[side].bench)) {
+        const a = p.state?.actions;
+        if (!a) continue;
+        attempted += a.passes + a.crosses + a.throughBalls + a.dribbles
+                   + a.tacklesAttempted + a.shotsTaken;
+        completed += a.passesCompleted + a.crossesCompleted + a.throughBallsCompleted
+                   + a.dribblesCompleted + a.tackles + a.shotsOnTarget;
+      }
+      const errPct = attempted > 0 ? Math.round((attempted - completed) / attempted * 100) : 0;
+      return { ttd: attempted, ttdCompleted: completed, ttdErrorPct: errPct };
+    };
+    const ttdH = ttdFor('home');
+    const ttdA = ttdFor('away');
     return {
       home: {
         ...s.home,
         possession: Math.round((s.home.possessionTicks / total) * 100),
         passAcc: s.home.passes ? Math.round(s.home.passesCompleted * 100 / s.home.passes) : null,
+        defenseVector: vH.defenseVector,
+        pressingVector: vH.pressingVector,
+        ttd: ttdH.ttd,
+        ttdCompleted: ttdH.ttdCompleted,
+        ttdErrorPct: ttdH.ttdErrorPct,
       },
       away: {
         ...s.away,
         possession: Math.round((s.away.possessionTicks / total) * 100),
         passAcc: s.away.passes ? Math.round(s.away.passesCompleted * 100 / s.away.passes) : null,
+        defenseVector: vA.defenseVector,
+        pressingVector: vA.pressingVector,
+        ttd: ttdA.ttd,
+        ttdCompleted: ttdA.ttdCompleted,
+        ttdErrorPct: ttdA.ttdErrorPct,
       },
     };
   }

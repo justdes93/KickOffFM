@@ -1105,6 +1105,10 @@ function renderResult() {
         ${statsRow('Фоли', sH.fouls, sA.fouls)}
         ${statsRow('Жовті', sH.yellows, sA.yellows)}
         ${statsRow('Офсайди', sH.offsides, sA.offsides)}
+        ${statsRow('ТТД', sH.ttd ?? '—', sA.ttd ?? '—')}
+        ${statsRow('Брак ТТД %', (sH.ttdErrorPct ?? 0) + '%', (sA.ttdErrorPct ?? 0) + '%')}
+        ${renderVectorBar('Вектор оборони', sH.defenseVector, sA.defenseVector, home.short, away.short)}
+        ${renderVectorBar('Вектор пресингу', sH.pressingVector, sA.pressingVector, home.short, away.short)}
         <h3>Голи</h3>
         ${result.goals.length === 0 ? '<div class="empty">0:0 — без голів</div>' :
           `<div class="goal-list">
@@ -1116,9 +1120,213 @@ function renderResult() {
               </div>
             `).join('')}
           </div>`}
+        ${renderShotsTable(result.shots, home, away)}
+        ${renderTeamHeatmaps(result.positionsLog, home, away)}
+        ${renderPlayerRosters(result.playersStats, result.positionsLog, home, away)}
         <div class="actions">
           <button class="ghost" data-go="dashboard">← Назад</button>
         </div>
+      </div>
+    </div>
+  `;
+}
+
+// S82b: render two columns (home + away) of player rows. Each row clickable
+// → opens result-page player modal with attrs + TTD + heatmap.
+function renderPlayerRosters(playersStats, positionsLog, home, away) {
+  if (!Array.isArray(playersStats) || playersStats.length === 0) return '';
+  // Stash the data on window so the click handler can read it
+  // (we serialise the index into data-pl-idx).
+  window._resultPlayerData = { playersStats, positionsLog };
+  const rowOf = (p, idx) => {
+    const a = p.state?.actions || {};
+    const ttd = (a.passes||0) + (a.crosses||0) + (a.throughBalls||0) + (a.dribbles||0)
+              + (a.tacklesAttempted||0) + (a.shotsTaken||0) + (a.clears||0)
+              + (a.interceptions||0) + (a.blocks||0) + (a.headersWon||0);
+    const goalIcons = (p.state?.goals||0) > 0 ? '⚽'.repeat(p.state.goals) : '';
+    const assistIcons = (p.state?.assists||0) > 0 ? '🅰'.repeat(p.state.assists) : '';
+    const cardIcon = p.state?.sentOff ? '🟥' : ((p.state?.yellow||0) > 0 ? '🟨' : '');
+    return `
+      <div class="result-row clickable" data-pl-idx="${idx}">
+        <span class="num">${p.num}</span>
+        <span class="name">${p.name}</span>
+        <span class="role">${p.role}</span>
+        <span class="icons">${goalIcons}${assistIcons}${cardIcon}</span>
+        <span class="ttd muted small">${ttd > 0 ? ttd + ' дій' : '—'}</span>
+      </div>`;
+  };
+  const homeRows = playersStats
+    .map((p, idx) => ({ p, idx }))
+    .filter(x => x.p.side === 'home')
+    .map(x => rowOf(x.p, x.idx))
+    .join('');
+  const awayRows = playersStats
+    .map((p, idx) => ({ p, idx }))
+    .filter(x => x.p.side === 'away')
+    .map(x => rowOf(x.p, x.idx))
+    .join('');
+  return `
+    <h3 class="mt">Склади</h3>
+    <div class="rosters-pair">
+      <div>
+        <div class="hm-title">${home.short || home.name}</div>
+        ${homeRows}
+      </div>
+      <div>
+        <div class="hm-title">${away.short || away.name}</div>
+        ${awayRows}
+      </div>
+    </div>
+  `;
+}
+
+// S82: team heat maps on result page. Aggregates all position samples per
+// team and renders a single density grid per side.
+function renderTeamHeatmaps(positionsLog, home, away) {
+  if (!positionsLog || typeof positionsLog !== 'object') return '';
+  const collect = (side) => {
+    const all = [];
+    for (const [key, pts] of Object.entries(positionsLog)) {
+      if (!key.startsWith(side + '-')) continue;
+      if (Array.isArray(pts)) all.push(...pts);
+    }
+    return all;
+  };
+  const hPts = collect('home');
+  const aPts = collect('away');
+  if (hPts.length === 0 && aPts.length === 0) return '';
+  return `
+    <h3 class="mt">Теплові карти</h3>
+    <div class="heatmaps-pair">
+      <div class="heatmap-block">
+        <div class="hm-title">${home.short || home.name}</div>
+        ${renderResultHeatmapSvg(hPts)}
+      </div>
+      <div class="heatmap-block">
+        <div class="hm-title">${away.short || away.name}</div>
+        ${renderResultHeatmapSvg(aPts)}
+      </div>
+    </div>
+  `;
+}
+
+function renderResultHeatmapSvg(points) {
+  const GX = 21, GY = 14;
+  const grid = new Array(GX * GY).fill(0);
+  for (const pt of points) {
+    if (typeof pt.x !== 'number' || typeof pt.y !== 'number') continue;
+    const gx = Math.min(GX - 1, Math.max(0, Math.floor(pt.x / 105 * GX)));
+    const gy = Math.min(GY - 1, Math.max(0, Math.floor(pt.y / 68 * GY)));
+    grid[gy * GX + gx]++;
+  }
+  const maxCount = Math.max(1, ...grid);
+  const cellW = 105 / GX, cellH = 68 / GY;
+  let cells = '';
+  for (let gy = 0; gy < GY; gy++) {
+    for (let gx = 0; gx < GX; gx++) {
+      const c = grid[gy * GX + gx];
+      if (c === 0) continue;
+      const intensity = c / maxCount;
+      const hue = 220 - intensity * 220;
+      const alpha = 0.18 + intensity * 0.55;
+      cells += `<rect x="${gx * cellW}" y="${gy * cellH}" width="${cellW}" height="${cellH}" fill="hsl(${hue.toFixed(0)},90%,55%)" fill-opacity="${alpha.toFixed(2)}"/>`;
+    }
+  }
+  return `
+    <svg class="heatmap-svg" viewBox="-2 -1 109 70" preserveAspectRatio="xMidYMid meet">
+      <rect class="hm-pitch" x="0" y="0" width="105" height="68"/>
+      <line class="hm-line" x1="52.5" y1="0" x2="52.5" y2="68"/>
+      <circle class="hm-line" cx="52.5" cy="34" r="9.15" fill="none"/>
+      <rect class="hm-line" x="0" y="13.84" width="16.5" height="40.32" fill="none"/>
+      <rect class="hm-line" x="88.5" y="13.84" width="16.5" height="40.32" fill="none"/>
+      ${cells}
+    </svg>
+  `;
+}
+
+// S79: Rich shot-by-shot table. Each row is one shot with shooter, geometry,
+// inherited pressure, xG, GK + skill used, and the resolution.
+function renderShotsTable(shots, home, away) {
+  if (!Array.isArray(shots) || shots.length === 0) return '';
+  const RESULT_UA = {
+    goal: '⚽ Гол',
+    saved: '🥅 Сейв',
+    post: '🪵 Штанга',
+    off_target: 'Мимо',
+    blocked: '🛡️ Блок',
+    pending: '—',
+  };
+  const TYPE_UA = {
+    foot: 'нога',
+    head: 'голова',
+    penalty: 'пенальті',
+    fk: 'штрафний',
+  };
+  const SKILL_UA = {
+    reflexes: 'реакція',
+    positioning: 'вибір позиції',
+    one_on_ones: 'один-на-один',
+  };
+  const sorted = [...shots].sort((a, b) => a.time - b.time);
+  return `
+    <h3 class="mt">Удари</h3>
+    <div class="shots-table-wrap">
+      <table class="shots-table">
+        <thead><tr>
+          <th>Хв</th><th>Команда</th><th>Гравець</th><th>Тип</th>
+          <th class="num">Дист.</th><th class="num">Кут°</th><th class="num">Тиск</th><th class="num">xG</th>
+          <th>Воротар</th><th>Скіл GK</th><th>Результат</th>
+        </tr></thead>
+        <tbody>
+          ${sorted.map(s => `
+            <tr class="shot-row shot-${s.result}">
+              <td>${Math.floor(s.time / 60)}'</td>
+              <td>${s.side === 'home' ? home.short : away.short}</td>
+              <td>${s.shooterName} <span class="muted small">(${s.shooterPos})</span></td>
+              <td>${TYPE_UA[s.shotType] || s.shotType}</td>
+              <td class="num">${s.distGoal}м</td>
+              <td class="num">${s.angleDeg}°</td>
+              <td class="num">${s.pressure}%</td>
+              <td class="num">${(typeof s.xG === 'number' ? s.xG : 0).toFixed(2)}</td>
+              <td>${s.gkName || '—'}</td>
+              <td><span class="muted small">${SKILL_UA[s.gkSkillUsed] || s.gkSkillUsed}</span></td>
+              <td>${RESULT_UA[s.result] || s.result}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// S80: render a single −100..+100 vector bar with both teams' values.
+// Positive = aggressive / high-line (good); negative = passive / under siege.
+function renderVectorBar(label, hVal, aVal, hShort, aShort) {
+  if (hVal == null && aVal == null) return '';
+  const hv = hVal ?? 0;
+  const av = aVal ?? 0;
+  const segPct = (v) => Math.min(50, Math.abs(v) / 2);  // half-bar width
+  const cls = (v) => v > 20 ? 'high' : v < -20 ? 'low' : 'mid';
+  return `
+    <div class="vector-block">
+      <div class="vector-label">${label}</div>
+      <div class="vector-row">
+        <span class="vector-team-short">${hShort}</span>
+        <div class="vector-bar">
+          <div class="vector-axis"></div>
+          <div class="vector-fill ${hv >= 0 ? 'pos' : 'neg'} ${cls(hv)}"
+               style="${hv >= 0 ? 'left:50%' : 'right:50%'}; width:${segPct(hv)}%"></div>
+        </div>
+        <span class="vector-num ${cls(hv)}">${hv > 0 ? '+' : ''}${hv}</span>
+      </div>
+      <div class="vector-row">
+        <span class="vector-team-short">${aShort}</span>
+        <div class="vector-bar">
+          <div class="vector-axis"></div>
+          <div class="vector-fill ${av >= 0 ? 'pos' : 'neg'} ${cls(av)}"
+               style="${av >= 0 ? 'left:50%' : 'right:50%'}; width:${segPct(av)}%"></div>
+        </div>
+        <span class="vector-num ${cls(av)}">${av > 0 ? '+' : ''}${av}</span>
       </div>
     </div>
   `;
@@ -1339,6 +1547,23 @@ function renderFriendlyLive() {
           <h2>Кінець матчу</h2>
           <p id="m-fulltime-score"></p>
           <button id="m-newgame">Назад</button>
+        </div>
+
+        <!-- S26 player modal (was missing from the SPA port; needed for openPlayerModal in legacy-ui) -->
+        <div id="player-modal" class="modal hidden">
+          <div class="modal-content">
+            <header class="modal-header">
+              <h2><span id="pm-num">#—</span> <span id="pm-name">—</span></h2>
+              <button id="pm-close" class="ghost">×</button>
+            </header>
+            <div class="modal-body">
+              <div class="pm-meta-line">
+                <span id="pm-meta" class="muted small">—</span>
+                <span class="pm-ovr-pill">OVR <b id="pm-ovr">—</b></span>
+              </div>
+              <div id="pm-grid" class="player-attrs-grid"></div>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -1761,7 +1986,10 @@ async function loadResult() {
           ...state.params, _loaded: true, live: null,
           result: {
             homeScore: f.homeScore, awayScore: f.awayScore,
-            stats: f.stats, goals: f.goals, finishedAt: f.finishedAt,
+            stats: f.stats, goals: f.goals, shots: f.shots || [],
+            positionsLog: f.positionsLog || {},   // S82
+            playersStats: f.playersStats || [],   // S82b
+            finishedAt: f.finishedAt,
           },
           home: data.home, away: data.away,
           fixture: { round: '—', scheduledAt: f.scheduledAt, finishedAt: f.finishedAt },
@@ -2021,6 +2249,8 @@ function openPlayerModal(p) {
           </div>
         `).join('')}
       </div>
+      ${renderPlayerActionsBlock(p)}
+      ${renderPlayerHeatmapBlock(p)}
     </div>
   `;
   modal.addEventListener('click', (e) => {
@@ -2031,6 +2261,83 @@ function openPlayerModal(p) {
 
 function closePlayerModal() {
   document.querySelectorAll('.pl-modal').forEach(n => n.remove());
+}
+
+// S81: render TTD breakdown if p.state.actions exists
+function renderPlayerActionsBlock(p) {
+  const a = p.state?.actions;
+  if (!a) return '';
+  const total = (a.passes||0) + (a.crosses||0) + (a.throughBalls||0) + (a.dribbles||0)
+              + (a.tacklesAttempted||0) + (a.shotsTaken||0) + (a.clears||0)
+              + (a.interceptions||0) + (a.blocks||0) + (a.headersWon||0);
+  if (total === 0) return '';
+  const completed = (a.passesCompleted||0) + (a.crossesCompleted||0) + (a.throughBallsCompleted||0)
+                  + (a.dribblesCompleted||0) + (a.tackles||0) + (a.shotsOnTarget||0);
+  const attemptedDuel = (a.passes||0) + (a.crosses||0) + (a.throughBalls||0) + (a.dribbles||0)
+                      + (a.tacklesAttempted||0) + (a.shotsTaken||0);
+  const errPct = attemptedDuel > 0 ? Math.round((attemptedDuel - completed) / attemptedDuel * 100) : 0;
+  const passRow = (label, made, n) => n > 0
+    ? `<div class="act-row"><span>${label}</span><span class="num">${made}/${n} <span class="muted small">(${Math.round(made/n*100)}%)</span></span></div>`
+    : '';
+  const single = (label, n) => (n||0) > 0
+    ? `<div class="act-row"><span>${label}</span><span class="num">${n}</span></div>`
+    : '';
+  return `
+    <div class="pl-group pl-actions">
+      <h3>Дії в матчі</h3>
+      <div class="act-row total"><span>ТТД</span><span class="num">${total} <span class="muted small">(брак ${errPct}%)</span></span></div>
+      ${passRow('Передачі', a.passesCompleted||0, a.passes||0)}
+      ${passRow('Навіси', a.crossesCompleted||0, a.crosses||0)}
+      ${passRow('Розрізні', a.throughBallsCompleted||0, a.throughBalls||0)}
+      ${passRow('Дриблінг', a.dribblesCompleted||0, a.dribbles||0)}
+      ${passRow('Відбори', a.tackles||0, a.tacklesAttempted||0)}
+      ${passRow('Удари у ціль', a.shotsOnTarget||0, a.shotsTaken||0)}
+      ${single('Перехоплення', a.interceptions)}
+      ${single('Блоки', a.blocks)}
+      ${single('Вибивання', a.clears)}
+      ${single('Виграно голов.', a.headersWon)}
+    </div>
+  `;
+}
+
+// S82: render heatmap if p.positionsLog array is attached
+function renderPlayerHeatmapBlock(p) {
+  const pts = p.positionsLog;
+  if (!Array.isArray(pts) || pts.length < 5) return '';
+  const GX = 21, GY = 14;
+  const grid = new Array(GX * GY).fill(0);
+  for (const pt of pts) {
+    if (typeof pt.x !== 'number' || typeof pt.y !== 'number') continue;
+    const gx = Math.min(GX - 1, Math.max(0, Math.floor(pt.x / 105 * GX)));
+    const gy = Math.min(GY - 1, Math.max(0, Math.floor(pt.y / 68 * GY)));
+    grid[gy * GX + gx]++;
+  }
+  const maxCount = Math.max(1, ...grid);
+  const cellW = 105 / GX, cellH = 68 / GY;
+  let cells = '';
+  for (let gy = 0; gy < GY; gy++) {
+    for (let gx = 0; gx < GX; gx++) {
+      const c = grid[gy * GX + gx];
+      if (c === 0) continue;
+      const intensity = c / maxCount;
+      const hue = 220 - intensity * 220;
+      const alpha = 0.18 + intensity * 0.55;
+      cells += `<rect x="${gx * cellW}" y="${gy * cellH}" width="${cellW}" height="${cellH}" fill="hsl(${hue.toFixed(0)},90%,55%)" fill-opacity="${alpha.toFixed(2)}"/>`;
+    }
+  }
+  return `
+    <div class="pl-group pl-heatmap">
+      <h3>Теплова карта</h3>
+      <svg class="heatmap-svg" viewBox="-2 -1 109 70" preserveAspectRatio="xMidYMid meet">
+        <rect class="hm-pitch" x="0" y="0" width="105" height="68"/>
+        <line class="hm-line" x1="52.5" y1="0" x2="52.5" y2="68"/>
+        <circle class="hm-line" cx="52.5" cy="34" r="9.15" fill="none"/>
+        <rect class="hm-line" x="0" y="13.84" width="16.5" height="40.32" fill="none"/>
+        <rect class="hm-line" x="88.5" y="13.84" width="16.5" height="40.32" fill="none"/>
+        ${cells}
+      </svg>
+    </div>
+  `;
 }
 
 document.addEventListener('keydown', (e) => {
@@ -2081,6 +2388,20 @@ function attachHandlers() {
     n.addEventListener('click', () => {
       try { openPlayerModal(JSON.parse(n.getAttribute('data-player'))); }
       catch (e) { console.error('bad player payload', e); }
+    });
+  });
+  // S82b: result-page player row → modal with end-of-match snapshot
+  document.querySelectorAll('[data-pl-idx]').forEach(n => {
+    n.addEventListener('click', () => {
+      const idx = parseInt(n.getAttribute('data-pl-idx'), 10);
+      const data = window._resultPlayerData;
+      if (!data) return;
+      const p = data.playersStats[idx];
+      if (!p) return;
+      // Attach heatmap points for this player so openPlayerModal can render them
+      const key = `${p.side}-${p.num}`;
+      p.positionsLog = data.positionsLog?.[key] || [];
+      openPlayerModal(p);
     });
   });
   // S47: pitch pin click — circle = slot menu, name area = role menu
@@ -2135,6 +2456,11 @@ function attachHandlers() {
   document.querySelectorAll('[data-friendly-live]').forEach(n => n.addEventListener('click', (e) => {
     e.stopPropagation();
     go('friendly-live', { fixtureId: n.getAttribute('data-friendly-live') });
+  }));
+  // S83: scheduled friendly row → wait page (compare visible)
+  document.querySelectorAll('[data-friendly-wait]').forEach(n => n.addEventListener('click', (e) => {
+    e.stopPropagation();
+    go('friendly-wait', { fixtureId: n.getAttribute('data-friendly-wait') });
   }));
   document.querySelectorAll('[data-team-detail]').forEach(n => n.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -2243,8 +2569,13 @@ function renderFriendlies() {
     else { when = `${fmtDate(f.scheduledAt)} ${fmtTime(f.scheduledAt)}`; badge = 'скоро'; }
     // S57: tactics-override button for upcoming matches (not live, not pending invite to others)
     if (!live) tacticsBtn = `<button class="ghost small" data-friendly-tactics="${f.id}">⚙️ Тактика</button>`;
+    // S83: scheduled ("скоро") rows open the wait page → pre-match compare visible.
+    // Live rows open the live view (existing behaviour).
+    const navAttr = live ? `data-friendly-live="${f.id}"`
+      : (pending ? '' : `data-friendly-wait="${f.id}"`);
+    const navClass = (live || (!pending)) ? 'clickable' : '';
     return `
-      <div class="fixture-row friendly-row ${live ? 'live clickable' : ''}" ${live ? `data-friendly-live="${f.id}"` : ''}>
+      <div class="fixture-row friendly-row ${live ? 'live' : ''} ${navClass}" ${navAttr}>
         <div class="when">${when}</div>
         <div class="opp">${f.opponent?.name || '?'}</div>
         <div class="venue">${f.venue === 'home' ? '🏠' : '✈️'}</div>
@@ -2573,6 +2904,7 @@ function renderFriendlyWait() {
         </div>
         <div class="wait-countdown" id="wait-countdown">--:--</div>
         <div class="wait-hint">Початок: ${fmtDate(friendly.scheduledAt)} ${fmtTime(friendly.scheduledAt)}</div>
+        ${renderPrematchCompare(state.params.compare)}
         <div class="wait-actions">
           ${mySide ? `<button class="primary" data-friendly-tactics="${friendly._id}">⚙️ Налаштувати тактику</button>` : ''}
           <button class="ghost" data-go="friendlies">← Назад</button>
@@ -2582,13 +2914,71 @@ function renderFriendlyWait() {
   `;
 }
 
+// S83: pre-match compare card. Two columns with squad aggregates; bar between
+// them shows the relative split (e.g. home strength 1640 vs away 1490 → bar
+// 52/48). Green = better, red = worse.
+function renderPrematchCompare(compare) {
+  if (!compare || !compare.home || !compare.away) return '';
+  const h = compare.home, a = compare.away;
+  const MENT_UA = {
+    '-2': 'Дуже обор.', '-1': 'Оборонна', '0': 'Збаланс.',
+    '1': 'Атакуюча', '2': 'Дуже атак.',
+  };
+  const row = (label, hv, av, opts = {}) => {
+    const hN = typeof hv === 'number' ? hv : parseFloat(hv) || 0;
+    const aN = typeof av === 'number' ? av : parseFloat(av) || 0;
+    const total = hN + aN;
+    const hPct = total > 0 ? hN / total * 100 : 50;
+    const aPct = total > 0 ? aN / total * 100 : 50;
+    const hCls = hN > aN ? 'better' : hN < aN ? 'worse' : '';
+    const aCls = aN > hN ? 'better' : aN < hN ? 'worse' : '';
+    const display = opts.format || ((v) => v);
+    return `
+      <div class="pm-row">
+        <div class="pm-val h ${hCls}">${display(hv)}</div>
+        <div class="pm-bar">
+          <div class="pm-label">${label}</div>
+          <div class="pm-track">
+            <div class="pm-fill h" style="width:${hPct}%"></div>
+            <div class="pm-fill a" style="width:${aPct}%"></div>
+          </div>
+        </div>
+        <div class="pm-val a ${aCls}">${display(av)}</div>
+      </div>`;
+  };
+  // Text rows that don't have meaningful "more is better"
+  const textRow = (label, hv, av) => `
+    <div class="pm-row">
+      <div class="pm-val h text">${hv ?? '—'}</div>
+      <div class="pm-bar"><div class="pm-label">${label}</div></div>
+      <div class="pm-val a text">${av ?? '—'}</div>
+    </div>`;
+  return `
+    <div class="pm-compare">
+      <h3 class="mt">Передматчеве порівняння</h3>
+      ${row('Сила складу', h.squadStrength, a.squadStrength)}
+      ${row('Середній OVR', h.avgOverall, a.avgOverall)}
+      ${row('Середній вік', h.avgAge, a.avgAge)}
+      ${row('Легіонери', h.foreigners, a.foreigners)}
+      ${textRow('Схема', h.formation, a.formation)}
+      ${textRow('Ментальність', MENT_UA[String(h.mentality)] || h.mentality, MENT_UA[String(a.mentality)] || a.mentality)}
+      ${textRow('Тренер', h.manager ? '@' + h.manager : '—', a.manager ? '@' + a.manager : '—')}
+      ${textRow('Найкращий', h.bestPlayer ? `${h.bestPlayer.name} (${h.bestPlayer.ovr})` : '—',
+                              a.bestPlayer ? `${a.bestPlayer.name} (${a.bestPlayer.ovr})` : '—')}
+    </div>
+  `;
+}
+
 async function loadFriendlyWait() {
   if (_waitTimer) { clearInterval(_waitTimer); _waitTimer = null; }
   if (_waitPoll)  { clearInterval(_waitPoll); _waitPoll = null; }
   try {
     const id = state.params.fixtureId;
-    const det = await API.get(`/api/friendlies/${id}`);
-    state.params = { ...state.params, _loaded: true, ...det };
+    const [det, compare] = await Promise.all([
+      API.get(`/api/friendlies/${id}`),
+      API.get(`/api/friendlies/${id}/compare`).catch(() => null),  // S83 — best-effort
+    ]);
+    state.params = { ...state.params, _loaded: true, ...det, compare };
     render();
     startWaitCountdown(det.friendly.scheduledAt);
     // Poll server every 5s to detect state change → live or finished

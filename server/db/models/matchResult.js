@@ -21,6 +21,13 @@ const MatchResultSchema = new mongoose.Schema({
   // Goal log (engine.goalsList shape)
   goals:          { type: [mongoose.Schema.Types.Mixed], default: () => [] },
 
+  // S79: per-shot log (engine.shots shape — see _logShot in engine.js)
+  shots:          { type: [mongoose.Schema.Types.Mixed], default: () => [] },
+  // S82: per-player position samples for heat maps. Map of "side-num" → [{x,y}].
+  positionsLog:   { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // S82b: per-player end-of-match snapshot for post-match player modal
+  playersStats:   { type: [mongoose.Schema.Types.Mixed], default: () => [] },
+
   // Compressed match-event log for replay. Optional, may be lazy-loaded.
   // Schema: array of { tick, type, payload } records.
   events:         { type: [mongoose.Schema.Types.Mixed], default: () => [] },

@@ -57,6 +57,12 @@ const FriendlySchema = new mongoose.Schema({
   // Inline result data so we don't need a separate FriendlyResult collection.
   stats:          { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   goals:          { type: [mongoose.Schema.Types.Mixed], default: () => [] },
+  // S79: per-shot log (engine.shots shape)
+  shots:          { type: [mongoose.Schema.Types.Mixed], default: () => [] },
+  // S82: per-player position samples — "side-num" → [{x,y}]
+  positionsLog:   { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // S82b: per-player end-of-match snapshot for post-match player modal
+  playersStats:   { type: [mongoose.Schema.Types.Mixed], default: () => [] },
 
   // S57: per-match tactics override. Each side's manager can save a snapshot
   // here before kickoff; matchRunner uses it instead of team.tactics. Falls
