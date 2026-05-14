@@ -1,6 +1,8 @@
-# Kick-Off FM — Handoff (2026-05-12)
+# Kick-Off FM — Handoff (2026-05-14)
 
-Snapshot at end of S55-S76 sprint block. Continues from the original 2026-05-11 handoff which covered S1-S54. Reusable for a fresh Claude session — everything needed to keep building is in this file + the linked memory entries.
+Snapshot at end of S55-S77 sprint block. Continues from the original 2026-05-11 handoff which covered S1-S54. Reusable for a fresh Claude session — everything needed to keep building is in this file + the linked memory entries.
+
+> **2026-05-14**: section §10 added covering S77 (full localisation + PLAYER_SPEED_SCALE=0.5 + visual fixes + bench rebalance). Deployed to prod. Commit `c5734d0` on `main`.
 
 ---
 
@@ -213,4 +215,87 @@ These are auto-indexed via `MEMORY.md` in the same folder.
 
 Paste this into the new chat:
 
-> Working directory: `~/projects/kickoff-fm`. Read `HANDOFF.md` first. Memory entries in `~/.claude/projects/-Users-denyschupryn/memory/` cover engine-tuning + security backlogs. Live at https://kickoff-fm.fly.dev. Deploy via `~/.fly/bin/flyctl deploy --remote-only -a kickoff-fm`. Bench with `npm run bench`. I want to continue with [next priority from §8].
+> Working directory: `~/projects/kickoff-fm`. Read `CLAUDE.md` then `HANDOFF.md` (§10 has the latest S77 state). Memory entries in `~/.claude/projects/-Users-denyschupryn/memory/` cover engine-tuning + security backlogs. Live at https://kickoff-fm.fly.dev (deployed 2026-05-14). Deploy via `~/.fly/bin/flyctl deploy --remote-only -a kickoff-fm`. Bench with `npm run bench`. Knowledge base: https://github.com/justdes93/kickoff-fm-knowledge.
+
+---
+
+## 10. S77 — Full localisation + speed scale + visual pass (2026-05-14)
+
+Single-session marathon. All deployed to prod, commit `c5734d0` on `main`. KB repo NOT yet updated to reflect S77 — flag this if revisiting documentation.
+
+### 10.1 New engine-wide tunable
+
+```js
+// engine.js (top of file)
+const PLAYER_SPEED_SCALE = 0.5;
+```
+
+Multiplies `baseSpeed` in `actMoveToTarget` AND `playerSpeed` in `_computeEta`. Single dial that scales **all outfield-player running speed** (sprint + walk) without touching match clock or attributes. User chose 0.5 after experimenting with 0.05–0.5. Set lower for slower-mo, higher (1.0 = original) for sprintier feel. Several downstream issues stem from this — see §10.4.
+
+### 10.2 Full Ukrainian localisation
+
+Every user-visible string in `app.js`, `legacy-ui.js`, `engine.js` (commentary), and admin tables. Only English remaining:
+- Team / league / world / player names (fictional but English-style — intentional per user)
+- Position abbreviations (GK, CB, FB, CM, DM, AM, ST, W)
+
+Notable translation maps:
+- `ATTR_META` (24 outfield + 22 GK attrs, label + description)
+- Tactical dropdowns (mentality / tempo / press / def line / width / passing / corner / FK / time-wasting)
+- Engine log events (40+ strings — goals, fouls, saves, set pieces, VAR, shootout)
+- Stats labels (Possession, Shots, On target, etc.)
+- AI mentality labels
+- `describePayload` / `describeTacticalChange`
+
+### 10.3 Tactics modal stability
+
+Modal was disappearing after 10-20 sec — root cause: `pollActiveMatch` calls `render()` every poll cycle when score/minute changes, replacing DOM (including open modal). Fix: skip `render()` if `state.view ∈ {friendly-live, friendly-wait}` (top-bar pill is redundant inside the match anyway).
+
+Also: backdrop-click close used `mousedown+mouseup` tracking so an accidental drag from inside (e.g. on a `<select>`) doesn't close the modal. Removed the obsolete capture-phase `stopImmediatePropagation` hack in `rebindLiveControls`.
+
+### 10.4 Visual fixes batch — all in this session
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Ball jumps with thrower to throw-in spot | `_beginThrowIn` snapped taker to (x,y) instantly | Hybrid: if taker > 4m away, snap to 4m radius then walk last bit |
+| Same for goal kick (GK rushing back) | `_beginGoalKick` instant snap | Same hybrid pattern |
+| Same for corner kicker | `awardCornerSetPiece` gave ball ownership to kicker → ball followed them | Ball stays at flag (ownerSide = null), kicker hybrid-snapped within 4m, walks rest. `processSetPiece` changed `action = IDLE` → `MOVE_TO_POSITION` for kicker |
+| Throw-in often intercepted | Random AI pass choice — sometimes long forward, intercepted | After pause `onComplete`, force taker action='PASS' with `_passTargetNum = back receiver` |
+| Halftime: players frozen | 100/80 tick walk with PLAYER_SPEED_SCALE=0.5 = ~16m progress, needed 33m | Bumped to 350/350 + sprint mode in halftime tick path |
+| FK opponent next to keeper | 16-tick setup + push-out from S76 only inside `isDangerous` block — not enough time | Setup 16→70 ticks; attackers within 4.5m of opp GK moved to penalty edge |
+| Players cluster 5-6 around ball | `willReachBallFirst` only compared vs opp ETAs — multiple teammates could all decide "I'm closest" | Now requires `myEta <= bestMyEta` too |
+| Goals invisible in net + teleport at kickoff + scorers don't go to half | Ball reset to centre instantly (line 418); `tacticalUpdate` runs every 30t even during goal pause → overwrites scorer-at-corner target; `_retargetForKickoff` used full formation but `setupKickoff` snaps to compressed (× 0.4) → end-of-pause teleport | (a) Ball parked at goal mouth (`x = ±107`) during aftermath; moved to centre on `setup` phase. (b) Skip `tacticalUpdate` when `pause.type === 'goal' \|\| 'var_check'`. (c) Set BOTH `p.targetX/Y` AND `p.anchor.x/y` in `_beginGoalPauseInner` (executeAction reads from anchor each tick). (d) `_retargetForKickoff` now uses compressed positions matching `setupKickoff`. (e) `setupKickoff` only teleports stragglers (>3m from target) — others have already walked there. (f) aftermath 80→200t, setup 50→200t |
+| Close shots fly wide | Wide-miss prob 30% base + 21° angular noise regardless of distance | New `distFactor` (0.45 at ≤4m → 1.0 at 26m+) scales BOTH wide-miss prob and angular noise. Close 8m shots: ~25% miss, ±5° angular |
+| Reception "dead stop" | `HOLD` action set for 14 ticks after each touch (1.4 game-sec) + decel 0.7× per tick | timer 14→4, decel 0.7→0.88. Player keeps forward momentum, decideAction fires on next 4-tick cycle |
+| Hopeful 30m shots flying out | `minScore` for SHOOT outside box = 0.05 — too easy for AI to take | 0.05 → 0.15. Long shots require stronger setup |
+| Corner kicker takes before teammates arrive | 80-tick setup not enough with slow speed for midfield runs into box | Hybrid-snap attackers + defenders to within 8m of scripted spots |
+| Corner delivery falls short of target | `power = clamp(dxy * 0.95, 12, 24)` — max 24 m/s, falls short on 30+m corners | Compute via trajectory: `power = dxy / flightTime` where flightTime depends on `vz`. Power range now [14, 38] for lofted, [8, 18] for short |
+| Ball too big | r=1.215 | r=0.91 (-25%) + halo 2.7→2.0 proportional |
+| Goals invisible on pitch | SVG had 3D goal-net rects at x=-2.6 / x=105.2 but viewBox was `0 0 105 68` (clipped them off) | Extended viewBox: `-3 -1 111 70` |
+
+### 10.5 Bench after S77 fixes (16-match, 4-3-3 v 4-3-3)
+
+| Per team | S72 baseline | After S77 | Real EPL |
+|---|---|---|---|
+| Shots | 13.0 | **13.69** | 13 |
+| OT | 5.33 | 8.09 | 4.5 |
+| OT% | 41% | 59% (↑ accuracy fix) | 35% |
+| xG | 1.42 | 1.55 | 1.30 |
+| Goals | 1.20 | **1.75** | 1.30 |
+| Pass acc | 81.6% | 88.7% | 83% |
+| Offsides | 13.6 | 2.13 ⭐ | 2.0 |
+| Corners | 3.3 | **4.88** | 5.0 |
+| Scoreless | 13% | 0% | 8% |
+
+OT% high because shooting accuracy got tighter; conversion still ~13% (real ~11%) — within bounds. Pass-acc creep tracks slower defenders not getting to interception lines. **Acceptable for now** — user happy with feel.
+
+### 10.6 Known carry-over / open
+
+- **Corner waiting** still not perfect — kicker arrives, glances around, then kicks. Could extend setup further or wait for `attackersInBox` count to threshold.
+- **`setupKickoff` facing snap** still slightly jarring (rotates all players to face opponent in one tick). Could ease over 5-10 ticks.
+- **OT% 59%** above real-football 33%. Tightening would need either lower xG-per-shot OR higher save base. Both interact with other systems.
+- **Engine in Web Worker** still open (biggest remaining UI win).
+- **Goals scored from far still appear sometimes** because long shot bias still > 0 for high `long_shots` attribute. Could fully gate by attribute > 80.
+
+### 10.7 Audit script
+
+`scripts/audit.js` (new this session) runs N matches and surfaces distributions, outliers, xG-vs-actual gaps, spectacular-event frequencies. Use `node scripts/audit.js 100` for engine quality check.
