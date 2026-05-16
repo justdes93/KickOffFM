@@ -1,8 +1,8 @@
 # Kick-Off FM — Handoff (2026-05-14)
 
-Snapshot at end of S55-S77 sprint block. Continues from the original 2026-05-11 handoff which covered S1-S54. Reusable for a fresh Claude session — everything needed to keep building is in this file + the linked memory entries.
+Snapshot at end of S55-S85 sprint block. Continues from the original 2026-05-11 handoff which covered S1-S54. Reusable for a fresh Claude session — everything needed to keep building is in this file + the linked memory entries.
 
-> **2026-05-14**: section §10 added covering S77 (full localisation + PLAYER_SPEED_SCALE=0.5 + visual fixes + bench rebalance). Deployed to prod. Commit `c5734d0` on `main`.
+> **2026-05-14 update**: section §10 covers S77 (localisation + speed scale + visual pass). Section §11 covers S78-S85 (slf.fm-inspired analytics: pressure carry, rich shot table, vectors, TTD, heat maps, pre-match compare, phase distribution, timeline scrubbing). Deployed to prod. Latest commit `c426777` on `main`.
 
 ---
 
@@ -299,3 +299,76 @@ OT% high because shooting accuracy got tighter; conversion still ~13% (real ~11%
 ### 10.7 Audit script
 
 `scripts/audit.js` (new this session) runs N matches and surfaces distributions, outliers, xG-vs-actual gaps, spectacular-event frequencies. Use `node scripts/audit.js 100` for engine quality check.
+
+---
+
+## 11. S78–S85 — slf.fm-inspired analytics + UX overhaul (2026-05-14)
+
+Single-session arc adding the analytical layer reverse-engineered from slf.fm. Each sprint commits to the same `main` branch (final commit `c426777`). All deployed to prod.
+
+### 11.1 Architecture summary
+
+| Sprint | Adds to `engine.js` | Adds to API / DB | Adds to UI |
+|---|---|---|---|
+| **S78** Pressure carry | `state.pressure` on every player; `actPass/Cross/ThroughBall` compute `pendingPass.difficulty`; `controlBall` inherits `receiver.state.pressure = difficulty * 50` on completion; `actShoot` adds `inheritedPressureFactor * 0.40` to `wideMissProb`; decay −10 / game-sec in `updatePlayerStates` | — | (visible via shot table — see S79) |
+| **S79** Rich shot log | `this.shots = []` + `_logShot()` helper called from 4 fire sites (open-play, penalty, FK direct, header); resolution paths (goal/saved/post/off_target/blocked) set `result` via `shotIdx` lookup | `MatchResult.shots` + `Friendly.shots` | Shots table on `/result/:id` with full xG breakdown, color-coded by result |
+| **S80** Vectors | `_recoveryX[side]` accumulated at tackle / intercept / loose-ball-win sites; `getStats()` computes `defenseVector` (anchor at own 35m, attack-direction normalised) + `pressingVector` (% opp-half recoveries) | included in `stats.{home,away}` | Two horizontal bars −100..+100 with gradient colours |
+| **S81** Per-player TTD | `p.state.actions` counters on every player; hooked at every action site; team TTD + error % computed in `getStats()` | included in `stats.{home,away}` | New player-modal section + clickable squad rows in live view |
+| **S82** Heat maps | `positionsLog[\`${side}-${num}\`]` sampled every 60 ticks → ~300 KB / match | `MatchResult.positionsLog` + `Friendly.positionsLog` | Per-player heatmap in modal; per-team aggregate on result page (21×14 grid, blue→red ramp) |
+| **S82b** Player snapshots | `getPlayerStats()` end-of-match snapshot per player | `MatchResult.playersStats` + `Friendly.playersStats` | Clickable rosters on result page → modal w/ attrs + TTD + heatmap |
+| **S83** Pre-match compare | — | `GET /api/friendlies/:id/compare` aggregates squad strength / OVR / age / foreigners / formation / mentality / manager / best player | New section on `/wait/:id` + `/friendlies` list scheduled rows clickable |
+| **S84** Phase distribution | `_phaseTicks[side][phase]` accumulated by 30t per `tacticalUpdate`; phase keys: `build/progress/final/def/transAtk/transDef` | included in `stats.{home,away}.phaseDistribution` | Stacked-bar per team + legend on result page |
+| **S85** Timeline scrubbing | — | — | Slider 0..90 + mini-pitch SVG + events list, instant DOM update via `scrubRender(minute)` using existing `positionsLog` samples — no re-sim |
+
+### 11.2 Critical bug fixes uncovered during S78-S85
+
+- **Tactics modal disappearing every 10 sec** (pre-S78) — root cause was `pollActiveMatch` calling `render()` when `currentMinute` changed; fix: skip render when `state.view ∈ {friendly-live, friendly-wait}`
+- **Backdrop close on accidental drag** — switched to `mousedown + click` two-stage tracking
+- **`#player-modal` element missing from SPA live template** — was inherited from `legacy.html` but never ported to `app.js` `renderFriendlyLive`. Added manually
+- **`_recoveryX` key mismatch** in S80 — phase assigned by engine is `'def'` (3 letters), buckets were keyed `'defend'` → all defensive ticks lost. Fixed by aligning keys
+- **Stale preview-server** — Node `--watch` didn't reload after route additions in `friendly.js`; required manual `preview_stop + preview_start`. Worth remembering when server changes don't take effect
+
+### 11.3 Bench numbers after S78-S85 (16 matches, 4-3-3 v 4-3-3)
+
+| Per team | S77 → S78-S85 | Real EPL |
+|---|---|---|
+| Shots | 13.69 → **12.75** | 13 |
+| OT | 8.09 → 8.38 | 4.5 |
+| Goals | 1.75 → **2.13** | 1.3 |
+| xG | 1.55 → 1.51 | 1.3 |
+| Pass acc | 88.7 % → 88.5 % | 83 % |
+| Corners | 4.88 → **5.25** ✓ | 5 |
+| Offsides | 2.13 → 2.13 ✓ | 2 |
+| Scoreless | 0 % → 0 % | 8 % |
+
+Goals at 2.13 — slightly elevated (real 1.3) but matches user's earlier "~2.0 / team" preference. Pressure mechanic redistributes shot quality through pass-chain hops so attackers occasionally arrive at the box with low inherited pressure → clean shots → goals.
+
+### 11.4 New data persisted per match
+
+```js
+MatchResult / Friendly schemas now include:
+  stats.{home,away}.defenseVector       Number  -100..+100
+  stats.{home,away}.pressingVector      Number  -100..+100
+  stats.{home,away}.ttd                 Number
+  stats.{home,away}.ttdErrorPct         Number  0..100
+  stats.{home,away}.phaseDistribution   { build, progress, final, def, transAtk, transDef } as %
+  shots[]                               Array of rich shot records (S79)
+  positionsLog                          { "side-num": [{x,y}] } 60-tick samples (S82)
+  playersStats[]                        Per-player end-of-match snapshot (S82b)
+```
+
+### 11.5 New tooling
+
+- `scripts/audit.js` — 100-match aggregate distributions + outliers
+- `scripts/tactic_check.js` — for each tactical slider, compares extreme values across N matches to verify each one has measurable effect
+
+### 11.6 Open / deferred
+
+- Per-player state.actions are now persisted via `playersStats[]`, but the **legacy-ui live player modal** still reads from in-memory engine. For finished-match modal access on result page, use the SPA's app.js modal which reads persisted snapshot
+- Timeline scrubber currently uses position samples (60-tick granularity = 6 game-sec); no ball position; no animation between frames. Acceptable for "where were they at minute X" UX
+- League-fixture result pages don't yet expose the new analytics (only friendly result page wired). Should propagate the new sections to `/result/:fixtureId` once league flow is verified
+- Phase distribution's `def` bucket dominates (65-72 %) because engine assigns it whenever opponent has the ball; consider splitting into "high block" vs "low block" by `defLineX` if more granularity is wanted
+
+### 11.7 Quick-start prompt for new Claude session (updated)
+
+> Working directory: `~/projects/kickoff-fm`. Read `CLAUDE.md` then `HANDOFF.md` §10 (S77) + §11 (S78-S85). Memory entries in `~/.claude/projects/-Users-denyschupryn/memory/` cover engine + security backlogs. Live at https://kickoff-fm.fly.dev (deployed 2026-05-14, commit `c426777`). Deploy via `~/.fly/bin/flyctl deploy --remote-only -a kickoff-fm`. Bench with `npm run bench`. Audit with `node scripts/audit.js 100`. KB at https://github.com/justdes93/kickoff-fm-knowledge (sync to S85 still pending).
