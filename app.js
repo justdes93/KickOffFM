@@ -1120,6 +1120,8 @@ function renderResult() {
               </div>
             `).join('')}
           </div>`}
+        ${renderTimelineScrub(result, home, away)}
+        ${renderPhaseDistribution(sH.phaseDistribution, sA.phaseDistribution, home, away)}
         ${renderShotsTable(result.shots, home, away)}
         ${renderTeamHeatmaps(result.positionsLog, home, away)}
         ${renderPlayerRosters(result.playersStats, result.positionsLog, home, away)}
@@ -1127,6 +1129,138 @@ function renderResult() {
           <button class="ghost" data-go="dashboard">← Назад</button>
         </div>
       </div>
+    </div>
+  `;
+}
+
+// S85: scrub bar 0..90 with mini-pitch snapshot + score + events list up to
+// the selected minute. Uses positionsLog (60-tick samples) so no re-sim
+// needed — instant client-side scrubbing.
+function renderTimelineScrub(result, home, away) {
+  if (!result.positionsLog || typeof result.positionsLog !== 'object') return '';
+  if (!result.playersStats || result.playersStats.length === 0) return '';
+  // Total match minutes — assume 90 unless we can detect more from samples.
+  // positionsLog has ~900 samples per player at 6-sec spacing → 90 game-min.
+  const maxMin = 90;
+  // Pre-stash data for the slider handler
+  window._scrubData = {
+    home, away,
+    playersStats: result.playersStats,
+    positionsLog: result.positionsLog,
+    goals: result.goals || [],
+    shots: result.shots || [],
+  };
+  return `
+    <h3 class="mt">Перемотка по матчу</h3>
+    <div class="scrub-block" id="scrub-block">
+      <div class="scrub-header">
+        <span class="scrub-team t-home">${home.short || home.name}</span>
+        <span class="scrub-score" id="scrub-score">— : —</span>
+        <span class="scrub-team t-away">${away.short || away.name}</span>
+        <span class="scrub-min" id="scrub-min">90'</span>
+      </div>
+      <input type="range" min="0" max="${maxMin}" value="${maxMin}" step="1" class="scrub-slider" id="scrub-slider"/>
+      <svg id="scrub-pitch" class="scrub-pitch" viewBox="-2 -1 109 70" preserveAspectRatio="xMidYMid meet">
+        <rect class="hm-pitch" x="0" y="0" width="105" height="68"/>
+        <line class="hm-line" x1="52.5" y1="0" x2="52.5" y2="68"/>
+        <circle class="hm-line" cx="52.5" cy="34" r="9.15" fill="none"/>
+        <rect class="hm-line" x="0" y="13.84" width="16.5" height="40.32" fill="none"/>
+        <rect class="hm-line" x="88.5" y="13.84" width="16.5" height="40.32" fill="none"/>
+        <g id="scrub-dots"></g>
+      </svg>
+      <div class="scrub-events" id="scrub-events"></div>
+    </div>
+  `;
+}
+
+// S85: render the snapshot at minute M into the scrub elements (in-place).
+function scrubRender(minute) {
+  const data = window._scrubData;
+  if (!data) return;
+  const tMax = minute * 60;
+  const dots = document.getElementById('scrub-dots');
+  if (dots) {
+    const sampleIdx = Math.max(0, minute * 10 - 1);   // 60t / 6s = 10 samples per minute
+    const parts = [];
+    for (const p of data.playersStats) {
+      const key = `${p.side}-${p.num}`;
+      const log = data.positionsLog[key];
+      if (!Array.isArray(log) || log.length === 0) continue;
+      const pt = log[Math.min(sampleIdx, log.length - 1)];
+      if (!pt || typeof pt.x !== 'number') continue;
+      const colour = p.side === 'home' ? '#3b82f6' : '#ef4444';
+      parts.push(`<g><circle cx="${pt.x}" cy="${pt.y}" r="1.4" fill="${colour}" stroke="#fff" stroke-width="0.15"/><text x="${pt.x}" y="${pt.y + 0.6}" font-size="2" fill="#fff" text-anchor="middle" font-weight="600">${p.num}</text></g>`);
+    }
+    dots.innerHTML = parts.join('');
+  }
+  const goalsThruMinute = data.goals.filter(g => (g.time || 0) <= tMax);
+  const hScore = goalsThruMinute.filter(g => g.side === 'home').length;
+  const aScore = goalsThruMinute.filter(g => g.side === 'away').length;
+  const scoreEl = document.getElementById('scrub-score');
+  if (scoreEl) scoreEl.textContent = `${hScore} : ${aScore}`;
+  const minEl = document.getElementById('scrub-min');
+  if (minEl) minEl.textContent = `${minute}'`;
+  // Recent events (last 5) up to minute M — goals + on-target shots
+  const RESULT_UA = { goal: 'Гол', saved: 'Сейв', post: 'Штанга', off_target: 'Мимо', blocked: 'Блок' };
+  const events = [];
+  for (const g of goalsThruMinute) {
+    events.push({ t: g.time, side: g.side, text: `⚽ ${g.scorerName || 'автогол'}` });
+  }
+  for (const s of data.shots) {
+    if (s.time > tMax) continue;
+    if (s.result === 'goal') continue;  // already in goals
+    events.push({ t: s.time, side: s.side, text: `${RESULT_UA[s.result] || s.result}: ${s.shooterName}` });
+  }
+  events.sort((a, b) => b.t - a.t);   // newest first
+  const evEl = document.getElementById('scrub-events');
+  if (evEl) {
+    evEl.innerHTML = events.slice(0, 6).map(e => {
+      const m = Math.floor(e.t / 60);
+      const cls = e.side === 'home' ? 't-home' : 't-away';
+      return `<div class="scrub-ev ${cls}"><span class="t">${m}'</span> ${e.text}</div>`;
+    }).join('') || '<div class="muted small">Подій ще немає.</div>';
+  }
+}
+
+// S84: stacked bar showing % time spent in each tactical phase per team.
+// 6 phases: build / progress / final / defend / transAtk / transDef.
+function renderPhaseDistribution(hDist, aDist, home, away) {
+  if (!hDist && !aDist) return '';
+  const PHASE_UA = {
+    build: 'Розіграш',
+    progress: 'Просування',
+    final: 'Фінальна треть',
+    def: 'Оборона',
+    transAtk: 'Перехід в атаку',
+    transDef: 'Перехід в оборону',
+  };
+  const PHASE_COLOR = {
+    build: '#1e40af', progress: '#3b82f6', final: '#22c55e',
+    def: '#ef4444', transAtk: '#fbbf24', transDef: '#a78bfa',
+  };
+  const segments = (d) => {
+    if (!d) return '';
+    return Object.entries(PHASE_UA).map(([k]) => {
+      const pct = d[k] || 0;
+      if (pct === 0) return '';
+      return `<div class="phase-seg" style="width:${pct}%;background:${PHASE_COLOR[k]}" title="${PHASE_UA[k]}: ${pct}%">${pct >= 8 ? pct + '%' : ''}</div>`;
+    }).join('');
+  };
+  const legend = Object.entries(PHASE_UA).map(([k, label]) => `
+    <span class="phase-legend-item"><span class="phase-legend-dot" style="background:${PHASE_COLOR[k]}"></span>${label}</span>
+  `).join('');
+  return `
+    <h3 class="mt">Розподіл фаз</h3>
+    <div class="phase-block">
+      <div class="phase-row">
+        <span class="phase-team-short">${home.short || home.name}</span>
+        <div class="phase-bar">${segments(hDist)}</div>
+      </div>
+      <div class="phase-row">
+        <span class="phase-team-short">${away.short || away.name}</span>
+        <div class="phase-bar">${segments(aDist)}</div>
+      </div>
+      <div class="phase-legend">${legend}</div>
     </div>
   `;
 }
@@ -2390,6 +2524,15 @@ function attachHandlers() {
       catch (e) { console.error('bad player payload', e); }
     });
   });
+  // S85: timeline scrub slider on result page — update positions+score on input
+  const scrubSlider = document.getElementById('scrub-slider');
+  if (scrubSlider) {
+    // Initial render at max (end of match)
+    scrubRender(parseInt(scrubSlider.value, 10));
+    scrubSlider.addEventListener('input', () => {
+      scrubRender(parseInt(scrubSlider.value, 10));
+    });
+  }
   // S82b: result-page player row → modal with end-of-match snapshot
   document.querySelectorAll('[data-pl-idx]').forEach(n => {
     n.addEventListener('click', () => {

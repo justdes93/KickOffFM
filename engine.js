@@ -334,6 +334,14 @@ export class MatchEngine {
     // Sampled every 30 ticks (3 game-sec). ~1800 samples/player for full match
     // → ~30 KB per player as plain {x,y} pairs.
     this.positionsLog = {};
+    // S84: per-side accumulator of ticks spent in each tactical phase.
+    // Incremented by 30 at every tacticalUpdate (which runs every 30 ticks
+    // and is the unit at which phase is held stable).
+    // Phase keys match what tacticalUpdate assigns: build/progress/final/def/transAtk/transDef.
+    this._phaseTicks = {
+      home: { build: 0, progress: 0, final: 0, def: 0, transAtk: 0, transDef: 0 },
+      away: { build: 0, progress: 0, final: 0, def: 0, transAtk: 0, transDef: 0 },
+    };
 
     // Sprint 17: unified pause foundation. All non-instant restarts (goal, card,
     // sub, injury, VAR, half-time, corner/FK/penalty in future) flow through
@@ -1473,6 +1481,11 @@ export class MatchEngine {
       }
     }
     team.currentPhase = phase;
+    // S84: accumulate phase time. Each tacticalUpdate call covers the next
+    // 30 ticks (until the next call), so credit 30 to whatever phase is active.
+    if (this._phaseTicks?.[side]?.[phase] != null) {
+      this._phaseTicks[side][phase] += 30;
+    }
 
     // Tactical params
     const t = team.tactics;
@@ -4312,6 +4325,17 @@ export class MatchEngine {
     };
     const ttdH = ttdFor('home');
     const ttdA = ttdFor('away');
+    // S84: phase distribution as percentages
+    const phaseDistFor = (side) => {
+      const buckets = this._phaseTicks[side];
+      const totalP = Object.values(buckets).reduce((s, v) => s + v, 0);
+      if (totalP === 0) return null;
+      const out = {};
+      for (const [phase, ticks] of Object.entries(buckets)) {
+        out[phase] = Math.round(ticks / totalP * 100);
+      }
+      return out;
+    };
     return {
       home: {
         ...s.home,
@@ -4322,6 +4346,7 @@ export class MatchEngine {
         ttd: ttdH.ttd,
         ttdCompleted: ttdH.ttdCompleted,
         ttdErrorPct: ttdH.ttdErrorPct,
+        phaseDistribution: phaseDistFor('home'),
       },
       away: {
         ...s.away,
@@ -4332,6 +4357,7 @@ export class MatchEngine {
         ttd: ttdA.ttd,
         ttdCompleted: ttdA.ttdCompleted,
         ttdErrorPct: ttdA.ttdErrorPct,
+        phaseDistribution: phaseDistFor('away'),
       },
     };
   }
